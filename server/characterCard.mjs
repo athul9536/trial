@@ -13,7 +13,7 @@
  *     lengths, and fence the values inside a clearly marked data block.
  */
 
-import { DELIVERY_RULES } from "./character.mjs";
+import { buildDeliveryRules } from "./character.mjs";
 
 const SUBJECT_TYPES = new Set([
   "person", "object", "vehicle", "food", "animal", "place", "artwork", "unclear",
@@ -193,8 +193,11 @@ function genderRule(voiceGender) {
  * @param {object} card validated character card
  * @param {"male"|"female"} voiceGender chosen by the user before connecting, so
  *   the voice never has to change mid-session
+ * @param {{allowCodeMixing?: boolean}} [options] whether the TTS engine can
+ *   speak mixed Malayalam-English. True only on the Sarvam path.
  */
-export function buildInstructions(card, voiceGender = "male") {
+export function buildInstructions(card, voiceGender = "male", options = {}) {
+  const { allowCodeMixing = false } = options;
   const details = card.visibleDetails.length
     ? card.visibleDetails.map((d) => `  - ${d}`).join("\n")
     : "  - (വ്യക്തമല്ല)";
@@ -252,6 +255,6 @@ ${personRule}
 
 ${genderRule(voiceGender)}
 
-${DELIVERY_RULES}
+${buildDeliveryRules(allowCodeMixing)}
 `.trim();
 }

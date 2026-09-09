@@ -193,3 +193,109 @@ synthesised, not native model speech.
 What we do **not** do: orchestrate three separate API calls per turn. It is one
 persistent session with server-side turn detection. Describe it that way, not as
 native speech-to-speech.
+
+---
+
+# Addendum: Sarvam Bulbul v3 evaluation
+
+The conclusion above — that Azure `ml-IN-MidhunNeural` was the best available
+option — was correct for the providers checked at the time. It did not hold once
+Sarvam was tested.
+
+## What changed the decision
+
+**Manglish works.** This was written off as impossible after spike 05, where ten
+code-mixing configurations were all unintelligible on Azure's Standard-tier
+voices. Bulbul v3 handles it natively. Listening verdict: "every word is
+understandable."
+
+That is not a marginal quality improvement, it changes what the character can
+say. Pure Malayalam was a constraint we accepted, not a choice we made.
+
+## Verified API contract
+
+Established by probing, not documentation (spikes 15-17):
+
+| Setting | Value | Why |
+|---|---|---|
+| Endpoint | `POST /text-to-speech/stream` | REST waits 1831 ms for the whole clip; streaming gives first audio in ~450 ms |
+| `output_audio_codec` | `linear16` | default is MP3, which the browser player cannot consume incrementally |
+| `speech_sample_rate` | `24000` | default came back as 22050, which would play at the wrong pitch |
+| `model` | `bulbul:v3` | |
+| Voices | `gokul` male, `roopa` female | cast by listening to all 37 Malayalam-capable voices |
+
+Valid `output_audio_codec` values, from an API validation error: `mp3`,
+`linear16`, `mulaw`, and others truncated in the message.
+
+Because that combination yields raw PCM16 at 24 kHz, **no browser changes were
+needed** — the bytes pass straight into the existing playback queue. The compiled
+client bundle hash was identical before and after the integration.
+
+## Measured latency
+
+Same test on both paths: one conversational turn, question sent to first audio
+byte, three samples each.
+
+| Path | Average | Samples |
+|---|---|---|
+| Sarvam | 2946 ms | 3388, 2951, 2500 |
+| Azure | 3270 ms | 2693, 2993, 4124 |
+
+**Correction to an earlier claim.** The "1000-1300 ms" figure quoted for Azure
+came from spike 01, which used a short prompt and a direct text question. It was
+not comparable to the greeting flow the Sarvam numbers came from, and it made
+Sarvam look worse than it is. Measured fairly, they are within noise of each
+other and Sarvam is marginally ahead.
+
+The dominant cost on both paths is Voice Live composing the reply. Sarvam's own
+synthesis contributes about 500 ms, measured server-side, because text is
+synthesised sentence by sentence rather than after the full reply.
+
+## Latency engineering that was required
+
+Naively waiting for the complete reply text before synthesising gave 3911 ms.
+Two fixes brought it to ~2950 ms:
+
+1. **Synthesise per sentence** as text deltas arrive, so later sentences render
+   while earlier ones play.
+2. **Split aggressively.** A 24-character minimum fragment length meant replies
+   with no early full stop still waited for the whole text. Lowering it to 7 lets
+   the opening interjection flush immediately, and a clause-level fallback at 42
+   characters handles comma-heavy Malayalam with no full stop until the end.
+
+Splitting at the *last* terminator rather than the first matters, because the
+character uses ellipses constantly and splitting inside one sounds broken.
+
+## Capabilities lost on the Sarvam path
+
+| Capability | Status | Reason |
+|---|---|---|
+| Server-side echo cancellation | **lost** | service rejects it when modalities are text-only: it needs a reference of the played audio |
+| Interruption truncation | **lost** | no audio item exists to truncate; barge-in aborts the Sarvam stream instead |
+| Single-provider operation | **lost** | two providers must be up |
+
+The echo cancellation loss is the one with real-world consequences: it makes
+presenting through speakers without headphones more likely to cause the character
+to interrupt itself.
+
+## Emotion control: not as advertised
+
+Sarvam's marketing mentions emotion control. The actual v3 API exposes only
+`pace` (0.5-2.0) and `temperature`. `pitch` and `loudness` were **removed** from
+v2 and are not available.
+
+So character emotion comes from three places: which of the 38 voices is cast,
+the pace, and the wording itself, since v3 infers prosody from text. Casting is
+the biggest lever.
+
+A note on method: I shortlisted candidates by audio duration, on the theory that
+slower delivery reads as weary. That was wrong, and inverted — the chosen voices
+(`gokul`, `roopa`) were among the *fastest* in the catalogue. Anger carries
+energy; the slow voices sounded lifeless. Auditioning all 37 cost ₹5 and was
+worth far more than the guess.
+
+## Cost
+
+₹3 per 1000 characters. A reply is roughly 100 characters, so about ₹0.30 each,
+or 330 replies on ₹100. The entire evaluation — 60-plus samples across five
+spikes — cost about ₹12.

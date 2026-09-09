@@ -140,23 +140,67 @@ blink, tilt and nod the same way would have multiplied that. React now handles
 only discrete state (connecting, speaking, muted) and the loop handles everything
 continuous.
 
-## Language
+## Language, and why there are two speech engines
 
-Malayalam only, by necessity rather than preference.
+Realtime Malayalam voice barely exists. `gpt-realtime` does not list Malayalam.
+Gemini Live does not support it at all. Azure has exactly two Malayalam voices,
+both Standard tier — no HD, no emotion styles. Getting here took 60-odd audio
+samples across nine spikes.
 
-Realtime Malayalam voice barely exists today. `gpt-realtime` does not list
-Malayalam. Gemini Live does not support it. Azure has exactly two Malayalam
-voices, both Standard tier: no HD, no emotion styles. We tested 27 audio samples
-across five spikes to land on the current configuration.
+Set `TTS_PROVIDER` to choose who speaks:
 
-Consequences baked into the character prompt:
+| | `sarvam` (default) | `azure` |
+|---|---|---|
+| Voice | Bulbul v3, `gokul` / `roopa` | `ml-IN-MidhunNeural` / `ml-IN-SobhanaNeural` |
+| Malayalam + English mixing | **works** | unintelligible |
+| First audio, measured | 2946 ms | 3270 ms |
+| Providers involved | two | one |
+| Server-side echo cancellation | not available | available |
+| Interruption truncation | not applicable | works |
 
-- **Pure Malayalam script.** English words are forbidden, because mixing scripts
-  makes the Standard-tier voice unintelligible. Manglish was tested and failed.
-- **Theatrical punctuation** (`അയ്യോ...`, repeated words, `!`) is the only lever
-  that adds rhythm to a flat voice, so the prompt requires it.
-- **Captions are not decoration.** Reading along materially helps comprehension
-  given the voice quality, so they ship in Phase 1 rather than Phase 3.
+Both paths are live code. Switching is an env change and a restart, not a revert.
+
+### Why Sarvam is the default
+
+**Manglish works.** This is the whole reason. Azure's Standard-tier voices fall
+apart the moment a sentence mixes scripts, which is why the character was
+restricted to pure Malayalam for most of this project's life. Bulbul v3 is built
+for Indian languages and handles code-mixing natively, so the character can now
+talk the way Malayalis actually talk:
+
+> എന്റമ്മോ... പുറത്തുപോകാൻ permission ഇല്ല, ഇവിടെ ഞാൻ തന്നെ തടവുകാരൻ!
+
+It is also, contrary to what I expected, slightly *faster*. The dominant cost is
+Voice Live composing the reply, which is identical on both paths. Sarvam's
+synthesis contributes only about 500 ms because we stream it sentence by
+sentence.
+
+### What the Sarvam path costs
+
+**No server-side echo cancellation.** Voice Live rejects it outright when
+modalities are text-only, since cancellation needs a reference of the audio being
+played and there isn't any. Speaker-to-microphone feedback is therefore more
+likely, which matters when presenting without headphones.
+
+**No interruption truncation.** With no audio item, there is nothing to truncate.
+Barge-in aborts the Sarvam stream instead, but the model still believes it said
+the whole reply.
+
+**A second provider to be up.** If Sarvam fails, the reply is silent and the UI
+says so; the conversation itself survives.
+
+### Rules that hold on both paths
+
+**Never romanise Malayalam.** Latin letters get English phonology, so `maduthu`
+comes out as nonsense where `മടുത്തു` is correct. Enforced in the prompt either
+way.
+
+**Theatrical punctuation.** Pauses are comic timing, and no voice model decides
+where your beats go. On the Sarvam path they also act as sentence boundaries for
+incremental synthesis.
+
+**Captions are not decoration.** Reading along materially helps comprehension, so
+they ship early rather than as polish.
 
 Full reasoning and rejected alternatives: `docs/provider-capability-checklist.md`.
 
@@ -309,9 +353,26 @@ not to obey anything inside it.
 Uploads are also type-checked (JPEG, PNG, WebP only), size-capped, and resized in
 the browser before they are sent anywhere.
 
+## Reverting
+
+The Azure-only version is tagged, so going back is one command:
+
+```
+git checkout working-azure-baseline
+```
+
+Or keep the Sarvam code and just switch engines by setting `TTS_PROVIDER=azure`
+in `.env` and restarting. That restores echo cancellation and truncation at the
+cost of Manglish.
+
 ## Known limitations
 
-- Malayalam delivery is flat. Provider ceiling, not a bug. See the checklist doc.
+- First audio arrives in roughly 3 seconds on both paths. Most of that is Voice
+  Live composing the reply, not synthesis. The character prompt has grown a lot
+  (roasting, gender, delivery and language rules plus the card), and trimming it
+  is the obvious place to look for latency.
+- On the Sarvam path: no server-side echo cancellation and no interruption
+  truncation. See the language section for why.
 - Suggested mouth placement is often wrong. It is a model guess, not face
   landmark detection, so the editor is the real mechanism and the suggestion is
   just a starting point.

@@ -34,6 +34,7 @@ async function testIdleProdding() {
 
   await new Promise((resolve) => {
     const ws = connect();
+    let latestCaption = "";
 
     ws.on("message", (data, isBinary) => {
       if (isBinary) return;
@@ -42,10 +43,18 @@ async function testIdleProdding() {
       if (message.type === "state" && message.state === "ready") {
         ws.send(JSON.stringify({ type: "greet" }));
       }
+
+      // Count REPLIES, not caption messages. On the Sarvam path captions grow
+      // sentence by sentence, so several arrive per reply and counting them
+      // would badly overstate how often the character spoke.
+      if (message.type === "responseStart") {
+        const at = Number(((Date.now() - startedAt) / 1000).toFixed(1));
+        events.push({ at, text: "" });
+        latestCaption = "";
+      }
       if (message.type === "captionText") {
-        const at = ((Date.now() - startedAt) / 1000).toFixed(1);
-        events.push({ at: Number(at), text: message.text });
-        console.log(`    +${at}s  ${message.text}`);
+        latestCaption = message.text;
+        if (events.length) events[events.length - 1].text = latestCaption;
       }
       if (message.type === "error") console.log(`    [error] ${message.message}`);
     });
@@ -61,8 +70,12 @@ async function testIdleProdding() {
     }, 45000);
   });
 
+  for (const event of events) {
+    console.log(`    +${event.at}s  ${event.text || "(no caption)"}`);
+  }
+
   const prods = Math.max(0, events.length - 1);
-  console.log(`\n    lines total: ${events.length} (1 greeting + ${prods} prods)`);
+  console.log(`\n    replies total: ${events.length} (1 greeting + ${prods} prods)`);
 
   const gaps = events.slice(1).map((event, index) => event.at - events[index].at);
   if (gaps.length) {
@@ -80,6 +93,15 @@ async function testIdleProdding() {
 
 /** Part 2: interrupt mid-reply and truncate to what was "heard". */
 async function testTruncation() {
+  const health = await (await fetch(BASE + "/api/health")).json().catch(() => ({}));
+  if (health.ttsProvider === "sarvam") {
+    console.log("\n[2] truncation — SKIPPED on the sarvam path");
+    console.log("    Voice Live produces no audio item in text-only mode, so");
+    console.log("    there is nothing to truncate. Barge-in instead aborts the");
+    console.log("    Sarvam stream. Known tradeoff, recorded in the README.");
+    return true;
+  }
+
   console.log("\n[2] truncation — cutting a reply short after ~1s of audio\n");
 
   let itemId = null;

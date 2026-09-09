@@ -19,6 +19,7 @@ import { AzureKeyCredential } from "@azure/core-auth";
 import { CHAIR, buildSessionConfig } from "./character.mjs";
 import { analyseImage, VisionError, visionModelName } from "./vision.mjs";
 import { buildInstructions, validateCard } from "./characterCard.mjs";
+import { SARVAM_VOICES, speak as sarvamSpeak } from "./sarvamTts.mjs";
 
 const PORT = Number(process.env.PORT ?? 8787);
 const ENDPOINT = process.env.AZURE_VOICELIVE_ENDPOINT;
@@ -27,6 +28,20 @@ const MODEL = process.env.AZURE_VOICELIVE_MODEL ?? "gpt-realtime-2.1";
 const VOICE = process.env.AZURE_VOICELIVE_VOICE ?? "ml-IN-MidhunNeural";
 const STT_LANGUAGES = process.env.AZURE_VOICELIVE_STT_LANGUAGES ?? "ml-IN,en-IN";
 const DEBUG = process.env.DEBUG === "true";
+
+/**
+ * Which engine speaks.
+ *
+ *   azure  - Voice Live synthesises with ml-IN Azure voices. Fewer moving parts,
+ *            but Standard tier only and cannot speak mixed Malayalam-English.
+ *   sarvam - Voice Live returns text, Sarvam Bulbul speaks it. Better voice and
+ *            code-mixing works, at the cost of a second provider.
+ *
+ * A flag rather than a rewrite, so switching back is an env change and needs no
+ * code revert.
+ */
+const TTS_PROVIDER = (process.env.TTS_PROVIDER ?? "azure").toLowerCase();
+const USE_SARVAM = TTS_PROVIDER === "sarvam";
 
 if (!ENDPOINT || !API_KEY) {
   console.error("[fatal] AZURE_VOICELIVE_ENDPOINT and AZURE_VOICELIVE_API_KEY must be set in .env");
@@ -40,7 +55,13 @@ const app = express();
 app.use(express.json({ limit: "8mb" }));
 
 app.get("/api/health", (_req, res) => {
-  res.json({ ok: true, model: MODEL, voices: VOICES, visionModel: visionModelName });
+  res.json({
+    ok: true,
+    model: MODEL,
+    ttsProvider: TTS_PROVIDER,
+    voices: USE_SARVAM ? SARVAM_VOICES : VOICES,
+    visionModel: visionModelName,
+  });
 });
 
 /** The built-in fallback character, used when nothing has been uploaded. */
@@ -185,13 +206,17 @@ wss.on("connection", (browser, request) => {
 
   // Instructions are assembled here rather than at analysis time, because
   // Malayalam self-description is gendered and depends on the chosen voice.
+  // Code-mixing is only allowed when Sarvam is speaking: Azure's ml-IN voices
+  // render mixed script unintelligibly.
+  const promptOptions = { allowCodeMixing: USE_SARVAM };
+
   const character = stored
     ? {
-        instructions: buildInstructions(stored.card, voiceGender),
+        instructions: buildInstructions(stored.card, voiceGender, promptOptions),
         openingLine: stored.card.openingLine,
       }
     : {
-        instructions: buildInstructions(CHAIR.card, voiceGender),
+        instructions: buildInstructions(CHAIR.card, voiceGender, promptOptions),
         openingLine: CHAIR.openingLine,
       };
 
@@ -210,8 +235,163 @@ wss.on("connection", (browser, request) => {
   // The id of the assistant item currently speaking, and how much audio we have
   // sent for it. The sent figure is the upper bound for truncation: the service
   // errors if asked to truncate beyond the real audio duration.
+  //
+  // Only meaningful on the Azure path. With Sarvam, Voice Live produces no audio
+  // item to truncate, so barge-in is handled by aborting the Sarvam stream and
+  // telling the model it was cut off. Documented as a tradeoff.
   let currentItemId = null;
   let sentAudioMs = 0;
+
+  // --- Sarvam speech pipeline -------------------------------------------
+  //
+  // Voice Live used to stream audio while the model was still composing, so the
+  // first sound arrived in about a second. Waiting for the complete reply text
+  // before synthesising pushed that to nearly four seconds.
+  //
+  // So we synthesise sentence by sentence as text arrives. The first sentence is
+  // usually short, which brings first audio back down, and later sentences are
+  // synthesised while earlier ones are still playing.
+  let ttsAbort = null;
+  let ttsGeneration = 0;
+  let pendingSpeech = 0;
+  let replyTextComplete = false;
+  let sentenceBuffer = "";
+  let spokenText = "";
+  let ttsChain = Promise.resolve();
+  let firstAudioAt = null;
+  let replyStartedAt = 0;
+
+  /**
+   * Minimum length before a fragment gets its own request.
+   *
+   * Deliberately small, because the character opens nearly every reply with a
+   * short interjection like "ഓഹോ..." — flushing that immediately gets first audio
+   * out fast, and the beat before the rest of the sentence is exactly the comic
+   * timing we want anyway. A larger minimum made the whole reply wait.
+   */
+  const MIN_FLUSH_CHARS = 7;
+
+  /**
+   * Malayalam replies here often run comma-heavy with no full stop until the
+   * end, so without a secondary split point the first audio waits for the entire
+   * reply. Above this length we allow a clause break to act as one.
+   */
+  const CLAUSE_SPLIT_CHARS = 42;
+
+  const stopSarvam = () => {
+    // Bumping the generation makes queued sentences no-ops without needing to
+    // reach into the promise chain.
+    ttsGeneration += 1;
+    pendingSpeech = 0;
+    sentenceBuffer = "";
+    spokenText = "";
+    replyTextComplete = false;
+    ttsChain = Promise.resolve();
+    if (ttsAbort) {
+      ttsAbort.abort();
+      ttsAbort = null;
+    }
+  };
+
+  /** Called once the text is complete and every sentence has been spoken. */
+  const finishReply = () => {
+    if (!replyTextComplete || pendingSpeech > 0) return;
+    if (firstAudioAt !== null) {
+      log(`reply spoken, first audio ${firstAudioAt - replyStartedAt}ms after text started`);
+    }
+    send({ type: "state", state: "idle" });
+    scheduleIdleProd();
+  };
+
+  const speakSentence = async (text, generation) => {
+    if (generation !== ttsGeneration) return;
+
+    const controller = new AbortController();
+    ttsAbort = controller;
+
+    try {
+      const result = await sarvamSpeak({
+        text,
+        gender: voiceGender,
+        signal: controller.signal,
+        onChunk: (chunk) => {
+          if (generation !== ttsGeneration) return;
+          if (firstAudioAt === null) firstAudioAt = Date.now();
+          if (browser.readyState === browser.OPEN) {
+            browser.send(chunk, { binary: true });
+          }
+        },
+      });
+      if (result.aborted && DEBUG) log("sarvam aborted mid-sentence");
+    } catch (err) {
+      log("sarvam failed:", err?.message);
+      // The conversation survives; this turn is just silent. Say so rather than
+      // leaving the UI stuck on "thinking".
+      send({
+        type: "error",
+        message: "The voice engine failed on that reply. Captions still work.",
+      });
+    } finally {
+      if (ttsAbort === controller) ttsAbort = null;
+      if (generation === ttsGeneration) {
+        pendingSpeech -= 1;
+        finishReply();
+      }
+    }
+  };
+
+  /** Queue a sentence, keeping playback order by chaining the promises. */
+  const enqueueSentence = (text) => {
+    const generation = ttsGeneration;
+    pendingSpeech += 1;
+    spokenText = `${spokenText} ${text}`.trim();
+    // Captions grow as each sentence is spoken, which also helps comprehension.
+    send({ type: "captionText", text: spokenText });
+    ttsChain = ttsChain.then(() => speakSentence(text, generation));
+  };
+
+  /**
+   * Pull complete sentences out of the buffer.
+   *
+   * Splitting at the LAST terminator rather than the first avoids cutting inside
+   * an ellipsis, which the character uses constantly for comic timing.
+   */
+  const flushSentences = (force) => {
+    let lastEnd = -1;
+    for (let i = 0; i < sentenceBuffer.length; i++) {
+      if (".!?…".includes(sentenceBuffer[i])) lastEnd = i;
+    }
+
+    if (lastEnd >= 0) {
+      const candidate = sentenceBuffer.slice(0, lastEnd + 1).trim();
+      // Hold very short fragments back, or the audio arrives in choppy bursts.
+      if (candidate.length >= MIN_FLUSH_CHARS || force) {
+        sentenceBuffer = sentenceBuffer.slice(lastEnd + 1);
+        if (candidate) enqueueSentence(candidate);
+        return;
+      }
+    }
+
+    // No usable sentence end, but the buffer is getting long: break at the last
+    // clause boundary so speech can start.
+    if (!force && sentenceBuffer.length >= CLAUSE_SPLIT_CHARS) {
+      let clauseEnd = -1;
+      for (let i = 0; i < sentenceBuffer.length; i++) {
+        if (",;:".includes(sentenceBuffer[i])) clauseEnd = i;
+      }
+      if (clauseEnd >= MIN_FLUSH_CHARS) {
+        const candidate = sentenceBuffer.slice(0, clauseEnd + 1).trim();
+        sentenceBuffer = sentenceBuffer.slice(clauseEnd + 1);
+        if (candidate) enqueueSentence(candidate);
+      }
+    }
+
+    if (force) {
+      const remainder = sentenceBuffer.trim();
+      sentenceBuffer = "";
+      if (remainder) enqueueSentence(remainder);
+    }
+  };
 
   /** Small JSON envelope to the browser. Audio goes as binary frames. */
   const send = (message) => {
@@ -266,6 +446,7 @@ wss.on("connection", (browser, request) => {
     if (closed) return;
     closed = true;
     clearIdleTimer();
+    stopSarvam();
     log(`cleanup: ${reason}`);
     try {
       await subscription?.close();
@@ -308,6 +489,9 @@ wss.on("connection", (browser, request) => {
 
       onInputAudioBufferSpeechStarted: async () => {
         noteUserActivity();
+        // Barge-in on the Sarvam path: abort synthesis so we stop paying for
+        // and streaming audio the user has already talked over.
+        stopSarvam();
         send({ type: "state", state: "listening" });
         // Barge-in: the user talking over the character must stop playback
         // immediately, both here and in the browser's audio queue. The browser
@@ -339,6 +523,17 @@ wss.on("connection", (browser, request) => {
         if (item?.id) {
           currentItemId = item.id;
           sentAudioMs = 0;
+          if (USE_SARVAM) {
+            // Fresh reply: reset the sentence pipeline and start the clock.
+            ttsGeneration += 1;
+            pendingSpeech = 0;
+            sentenceBuffer = "";
+            spokenText = "";
+            replyTextComplete = false;
+            ttsChain = Promise.resolve();
+            firstAudioAt = null;
+            replyStartedAt = Date.now();
+          }
           send({ type: "responseStart", itemId: item.id });
         }
       },
@@ -354,18 +549,43 @@ wss.on("connection", (browser, request) => {
         }
       },
 
+      // Azure path only: with Sarvam there is no synthesised audio here, so no
+      // transcript event fires and captions come from onResponseTextDone.
       onResponseAudioTranscriptDone: async (event) => {
+        if (USE_SARVAM) return;
         const text = event.transcript?.trim();
         if (text) {
-          log(`chair: ${text}`);
+          log(`says: ${text}`);
           send({ type: "captionText", text });
         }
       },
 
+      // Sarvam path: synthesise as the text streams in, sentence by sentence,
+      // so the first sound does not wait for the whole reply.
+      onResponseTextDelta: async (event) => {
+        if (!USE_SARVAM || !event.delta) return;
+        sentenceBuffer += event.delta;
+        flushSentences(false);
+      },
+
+      onResponseTextDone: async (event) => {
+        if (!USE_SARVAM) return;
+        const full = event.text?.trim();
+        if (full) log(`says: ${full}`);
+        replyTextComplete = true;
+        // Speak whatever is left, including a reply with no final punctuation.
+        flushSentences(true);
+        // A reply that produced no speech at all still has to end the turn.
+        finishReply();
+      },
+
       onResponseDone: async () => {
         responseActive = false;
+        // On the Sarvam path the reply is only text at this point and nothing
+        // has been spoken yet, so going idle here would end the turn early and
+        // start the silence clock while the character is still talking.
+        if (USE_SARVAM) return;
         send({ type: "state", state: "idle" });
-        // Start the silence clock only once the character has stopped talking.
         scheduleIdleProd();
       },
 
@@ -389,9 +609,14 @@ wss.on("connection", (browser, request) => {
         voice: voiceName,
         sttLanguages: STT_LANGUAGES,
         instructions: character.instructions,
+        textOnly: USE_SARVAM,
       }),
     );
-    log(`session configured, voice=${voiceName} (${voiceGender})`);
+    log(
+      USE_SARVAM
+        ? `session configured, text-only + sarvam ${SARVAM_VOICES[voiceGender]} (${voiceGender})`
+        : `session configured, voice=${voiceName} (${voiceGender})`,
+    );
   };
 
   browser.on("message", async (data, isBinary) => {
@@ -465,6 +690,7 @@ wss.on("connection", (browser, request) => {
 
       case "interrupt":
         noteUserActivity();
+        stopSarvam();
         try {
           await session.sendEvent({ type: "response.cancel" });
         } catch {}
@@ -480,6 +706,10 @@ wss.on("connection", (browser, request) => {
        * several interruptions its sense of the conversation drifts from reality.
        */
       case "played": {
+        // Not applicable on the Sarvam path: Voice Live produced no audio item,
+        // so there is nothing to truncate. Known tradeoff, see the README.
+        if (USE_SARVAM) break;
+
         const itemId = typeof message.itemId === "string" ? message.itemId : null;
         if (!itemId || itemId !== currentItemId) break;
 
@@ -545,6 +775,15 @@ wss.on("connection", (browser, request) => {
 httpServer.listen(PORT, () => {
   console.log(`Framinu Purathu server on http://localhost:${PORT}`);
   console.log(`  model  ${MODEL}`);
-  console.log(`  voices ${VOICES.male} / ${VOICES.female}`);
+  console.log(`  tts    ${TTS_PROVIDER}`);
+  console.log(
+    USE_SARVAM
+      ? `  voices ${SARVAM_VOICES.male} / ${SARVAM_VOICES.female} (bulbul:v3)`
+      : `  voices ${VOICES.male} / ${VOICES.female}`,
+  );
   console.log(`  vision ${visionModelName}   stt ${STT_LANGUAGES}`);
+
+  if (USE_SARVAM && !process.env.SARVAM_API_KEY) {
+    console.warn("  [warn] TTS_PROVIDER=sarvam but SARVAM_API_KEY is missing; replies will be silent");
+  }
 });

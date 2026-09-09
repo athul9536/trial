@@ -46,10 +46,53 @@ const ROAST_RULES = `
 `.trim();
 
 /**
- * Theatrical punctuation is the only lever that adds rhythm to a flat voice.
- * Shared by the built-in chair and by every generated character card.
+ * Language rules, which depend on what the speaking engine can actually handle.
+ *
+ * Azure's ml-IN voices are Standard tier and become unintelligible the moment a
+ * sentence mixes scripts — tested across ten configurations in spike 05, which is
+ * why pure Malayalam was enforced.
+ *
+ * Sarvam Bulbul v3 is built for Indian languages and handles code-mixed text
+ * natively, verified by listening. So on that path the character can finally talk
+ * the way Malayalis actually talk.
+ *
+ * One rule holds either way: never romanise Malayalam. Latin letters get English
+ * phonology, so "maduthu" comes out as nonsense where "മടുത്തു" is correct.
  */
-export const DELIVERY_RULES = `
+function languageRules(allowCodeMixing) {
+  if (allowCodeMixing) {
+    return `
+ഭാഷാ നിയമങ്ങൾ:
+- മലയാളം വാക്കുകൾ മലയാളം ലിപിയിൽ എഴുതുക.
+- ഒരു സാധാരണ മലയാളി സംസാരിക്കുന്നതുപോലെ, ഇടയ്ക്ക് English വാക്കുകൾ ഉപയോഗിക്കാം.
+  ഉദാ: "leave", "back pain", "permission", "full time", "silent mode", "duty".
+  English വാക്കുകൾ English അക്ഷരത്തിൽ തന്നെ എഴുതുക.
+- ഒരു മറുപടിയിൽ പരമാവധി രണ്ടോ മൂന്നോ English വാക്ക് മാത്രം. അതിൽ കൂടരുത്.
+- മലയാളം വാക്കുകൾ ഒരിക്കലും English അക്ഷരത്തിൽ എഴുതരുത്.
+  "maduthu" എന്ന് എഴുതരുത്, "മടുത്തു" എന്ന് എഴുതുക.
+`.trim();
+  }
+
+  return `
+ഭാഷാ നിയമങ്ങൾ (നിർബന്ധം):
+- മലയാളം ലിപിയിൽ മാത്രം എഴുതുക. English അക്ഷരങ്ങൾ ഒരിക്കലും ഉപയോഗിക്കരുത്.
+- English വാക്കുകൾ ഉപയോഗിക്കരുത്. എല്ലാത്തിനും മലയാളം വാക്ക് ഉപയോഗിക്കുക.
+- മലയാളം വാക്കുകൾ English അക്ഷരത്തിൽ എഴുതരുത്.
+`.trim();
+}
+
+/**
+ * Theatrical punctuation adds rhythm, and on the Azure path it was the only
+ * lever available. It still earns its place: pauses are comic timing, and no
+ * voice model decides where your beats go.
+ *
+ * @param {boolean} allowCodeMixing whether the TTS engine can speak Manglish
+ */
+export function buildDeliveryRules(allowCodeMixing = false) {
+  return DELIVERY_TEMPLATE.replace("__LANGUAGE_RULES__", languageRules(allowCodeMixing));
+}
+
+const DELIVERY_TEMPLATE = `
 പ്രകടനപരമായി സംസാരിക്കുക:
 - തുടക്കത്തിൽ ഒരു വികാര ശബ്ദം, ഉടനെ "..." ചേർക്കുക. കോമ വേണ്ട.
   ഉദാ: "അയ്യോ..." "ഹാ..." "ഛേ..." "ഓഹോ..." "എന്റമ്മോ..."
@@ -59,10 +102,7 @@ export const DELIVERY_RULES = `
 - ഒരേ വാക്ക് രണ്ടു തവണ ആവർത്തിക്കരുത്. ("വേദന വേദന" പോലെ എഴുതരുത്.)
   ഊന്നൽ വേണമെങ്കിൽ വേറൊരു വാക്ക് ഉപയോഗിക്കുക.
 
-ഭാഷാ നിയമങ്ങൾ (നിർബന്ധം):
-- മലയാളം ലിപിയിൽ മാത്രം എഴുതുക. English അക്ഷരങ്ങൾ ഒരിക്കലും ഉപയോഗിക്കരുത്.
-- English വാക്കുകൾ ഉപയോഗിക്കരുത്. എല്ലാത്തിനും മലയാളം വാക്ക് ഉപയോഗിക്കുക.
-- മലയാളം വാക്കുകൾ English അക്ഷരത്തിൽ എഴുതരുത്.
+__LANGUAGE_RULES__
 
 സംഭാഷണ നിയമങ്ങൾ:
 - പരമാവധി 16 വാക്കുകൾ. ഒരു വാക്യം. വരി മുറിക്കരുത്.
@@ -116,20 +156,44 @@ export const CHAIR = {
  *
  * Never set `voice.locale`: it makes TTS emit silence for other languages.
  */
-export function buildSessionConfig({ model, voice, sttLanguages, instructions }) {
-  return {
+export function buildSessionConfig({
+  model,
+  voice,
+  sttLanguages,
+  instructions,
+  /**
+   * When true, Voice Live returns text only and an external engine speaks it.
+   * Used for the Sarvam path, whose Malayalam voice handles code-mixed text
+   * that Azure's Standard-tier voices cannot.
+   */
+  textOnly = false,
+}) {
+  const config = {
     model,
-    modalities: ["text", "audio"],
+    modalities: textOnly ? ["text"] : ["text", "audio"],
     instructions,
-    // Default rate and pitch won the listening test. Anything from 1.1x up
-    // sounded fast-forwarded.
-    voice: { type: "azure-standard", name: voice },
     inputAudioFormat: "pcm16",
-    outputAudioFormat: "pcm16",
     turnDetection: { type: "azure_semantic_vad_multilingual" },
-    inputAudioEchoCancellation: { type: "server_echo_cancellation" },
     inputAudioNoiseReduction: { type: "azure_deep_noise_suppression" },
     // Malayalam is absent from the default multilingual model, so name it.
     inputAudioTranscription: { model: "azure-speech", language: sttLanguages },
   };
+
+  if (!textOnly) {
+    // Default rate and pitch won the listening test. Anything from 1.1x up
+    // sounded fast-forwarded.
+    config.voice = { type: "azure-standard", name: voice };
+    config.outputAudioFormat = "pcm16";
+
+    // The service rejects this outright when modalities is text-only:
+    // cancellation needs a reference of the audio being played, and in that mode
+    // Voice Live is not producing any.
+    //
+    // Consequence worth knowing: on the Sarvam path we lose server-side echo
+    // cancellation, so speaker-to-microphone feedback is more likely and
+    // headphones or push-to-talk matter more.
+    config.inputAudioEchoCancellation = { type: "server_echo_cancellation" };
+  }
+
+  return config;
 }

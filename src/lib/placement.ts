@@ -23,6 +23,11 @@ export interface EyePlacement {
   spacing: number;
   /** Eye radius, as a fraction of image width. */
   radius: number;
+  /**
+   * Degrees, applied about the midpoint so the pair tilts together.
+   * Needed for faces photographed at an angle, where level eyes look pasted on.
+   */
+  rotation: number;
 }
 
 const clamp = (value: number, min: number, max: number) =>
@@ -42,5 +47,7 @@ export function deriveEyes(mouth: MouthPlacement): EyePlacement {
     y: clamp(mouth.y - 0.16, 0.04, 0.94),
     spacing: clamp(mouth.width * 1.5, 0.1, 0.55),
     radius: clamp(mouth.width * 0.3, 0.025, 0.12),
+    // Inherit the mouth's tilt: on an angled face both features lean together.
+    rotation: mouth.rotation,
   };
 }

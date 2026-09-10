@@ -197,7 +197,7 @@ function genderRule(voiceGender) {
  *   speak mixed Malayalam-English. True only on the Sarvam path.
  */
 export function buildInstructions(card, voiceGender = "male", options = {}) {
-  const { allowCodeMixing = false } = options;
+  const { allowCodeMixing = false, roastIntensity = "savage" } = options;
   const details = card.visibleDetails.length
     ? card.visibleDetails.map((d) => `  - ${d}`).join("\n")
     : "  - (വ്യക്തമല്ല)";
@@ -255,6 +255,6 @@ ${personRule}
 
 ${genderRule(voiceGender)}
 
-${buildDeliveryRules(allowCodeMixing)}
+${buildDeliveryRules(allowCodeMixing, roastIntensity)}
 `.trim();
 }

@@ -2,7 +2,13 @@ import { useCallback, useRef, useState } from "react";
 import { MouthShape } from "./MouthShape";
 import type { EyePlacement, MouthPlacement } from "../lib/placement";
 
-type Mode = "mouth-move" | "mouth-resize" | "mouth-rotate" | "eyes-move" | "eyes-resize";
+type Mode =
+  | "mouth-move"
+  | "mouth-resize"
+  | "mouth-rotate"
+  | "eyes-move"
+  | "eyes-resize"
+  | "eyes-rotate";
 
 interface Props {
   imageUrl: string;
@@ -83,14 +89,30 @@ export function MouthEditor({
         return;
       }
 
-      if (mode === "eyes-resize" && eyes) {
-        // Horizontal drag sets how far apart the eyes sit, vertical sets size.
-        const halfSpan = Math.abs(pointerX / rect.width - eyes.x);
-        const vertical = Math.abs(pointerY / rect.height - eyes.y);
+      if (eyes && (mode === "eyes-resize" || mode === "eyes-rotate")) {
+        const centreX = eyes.x * rect.width;
+        const centreY = eyes.y * rect.height;
+        const dx = pointerX - centreX;
+        const dy = pointerY - centreY;
+
+        if (mode === "eyes-rotate") {
+          // The handle sits above the pair, so straight up is zero degrees.
+          const degrees = (Math.atan2(dy, dx) * 180) / Math.PI + 90;
+          onEyesChange({ ...eyes, rotation: clamp(Math.round(degrees), -45, 45) });
+          return;
+        }
+
+        // Undo the tilt before measuring, or dragging a rotated pair resizes it
+        // along the wrong axes.
+        const angle = toRadians(-eyes.rotation);
+        const localX = dx * Math.cos(angle) - dy * Math.sin(angle);
+        const localY = dx * Math.sin(angle) + dy * Math.cos(angle);
+
         onEyesChange({
           ...eyes,
-          spacing: clamp(halfSpan * 2, 0.06, 0.7),
-          radius: clamp(vertical * aspectRatio, 0.02, 0.16),
+          // Horizontal distance sets how far apart they sit, vertical sets size.
+          spacing: clamp((2 * Math.abs(localX)) / rect.width, 0.06, 0.7),
+          radius: clamp((Math.abs(localY) / rect.height) * aspectRatio, 0.02, 0.16),
         });
         return;
       }
@@ -153,29 +175,33 @@ export function MouthEditor({
               preserveAspectRatio="none"
               aria-hidden="true"
             >
-              {[0, 1].map((index) => {
-                const cx =
-                  (eyes.x + (index === 0 ? -eyes.spacing / 2 : eyes.spacing / 2)) * 1000;
-                const cy = eyes.y * viewHeight;
-                const r = eyes.radius * 1000;
-                return (
-                  <g key={index}>
-                    <ellipse
-                      cx={cx}
-                      cy={cy}
-                      rx={r}
-                      ry={r * 1.12}
-                      fill="#fffdf7"
-                      stroke="#3a3128"
-                      strokeWidth={r * 0.14}
-                    />
-                    <circle cx={cx} cy={cy} r={r * 0.44} fill="#231f1a" />
-                  </g>
-                );
-              })}
+              <g
+                transform={`rotate(${eyes.rotation} ${(eyes.x * 1000).toFixed(1)} ${(eyes.y * viewHeight).toFixed(1)})`}
+              >
+                {[0, 1].map((index) => {
+                  const cx =
+                    (eyes.x + (index === 0 ? -eyes.spacing / 2 : eyes.spacing / 2)) * 1000;
+                  const cy = eyes.y * viewHeight;
+                  const r = eyes.radius * 1000;
+                  return (
+                    <g key={index}>
+                      <ellipse
+                        cx={cx}
+                        cy={cy}
+                        rx={r}
+                        ry={r * 1.12}
+                        fill="#fffdf7"
+                        stroke="#3a3128"
+                        strokeWidth={r * 0.14}
+                      />
+                      <circle cx={cx} cy={cy} r={r * 0.44} fill="#231f1a" />
+                    </g>
+                  );
+                })}
+              </g>
             </svg>
 
-            {/* Invisible drag target over the eye pair, plus one resize handle. */}
+            {/* Drag target over the eye pair, with resize and rotate handles. */}
             <div
               className={`eyes-hit${mode?.startsWith("eyes") ? " eyes-hit-active" : ""}`}
               style={{
@@ -183,9 +209,15 @@ export function MouthEditor({
                 top: `${eyes.y * 100}%`,
                 width: `${(eyes.spacing + eyes.radius * 2) * 100}%`,
                 height: `${eyes.radius * 2.4 * aspectRatio * 100}%`,
+                transform: `translate(-50%, -50%) rotate(${eyes.rotation}deg)`,
               }}
               onPointerDown={beginDrag("eyes-move")}
             >
+              <span
+                className="handle handle-rotate"
+                onPointerDown={beginDrag("eyes-rotate")}
+                title="Tilt the eyes"
+              />
               <span
                 className="handle handle-resize"
                 onPointerDown={beginDrag("eyes-resize")}

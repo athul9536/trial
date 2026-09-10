@@ -10,6 +10,9 @@
 /** Azure offers exactly two Malayalam voices, so this is the whole palette. */
 export type VoiceChoice = "male" | "female";
 
+/** How hard the character goes after the user. */
+export type RoastLevel = "savage" | "normal";
+
 export type SessionState =
   | "idle"
   | "connecting"
@@ -48,10 +51,14 @@ export class RealtimeLink {
    * update. That also means the voice never changes mid-session, which matters
    * because mid-session voice switching is untested against this provider.
    */
-  connect(characterId?: string, voice: VoiceChoice = "male"): void {
+  connect(
+    characterId?: string,
+    voice: VoiceChoice = "male",
+    roast: RoastLevel = "savage",
+  ): void {
     if (this.socket) return;
 
-    const params = new URLSearchParams({ voice });
+    const params = new URLSearchParams({ voice, roast });
     if (characterId) params.set("character", characterId);
 
     const protocol = location.protocol === "https:" ? "wss:" : "ws:";

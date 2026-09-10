@@ -197,6 +197,9 @@ wss.on("connection", (browser, request) => {
   const requestedId = params.get("character");
   const voiceGender = resolveVoice(params.get("voice"));
   const voiceName = VOICES[voiceGender];
+  // Savage is the default: it is the funnier setting, and "normal" exists for
+  // when strangers are trying it rather than the person who asked for it.
+  const roastIntensity = params.get("roast") === "normal" ? "normal" : "savage";
 
   const stored = requestedId ? characters.get(requestedId) : null;
   if (requestedId && !stored) {
@@ -208,7 +211,7 @@ wss.on("connection", (browser, request) => {
   // Malayalam self-description is gendered and depends on the chosen voice.
   // Code-mixing is only allowed when Sarvam is speaking: Azure's ml-IN voices
   // render mixed script unintelligibly.
-  const promptOptions = { allowCodeMixing: USE_SARVAM };
+  const promptOptions = { allowCodeMixing: USE_SARVAM, roastIntensity };
 
   const character = stored
     ? {
@@ -614,8 +617,8 @@ wss.on("connection", (browser, request) => {
     );
     log(
       USE_SARVAM
-        ? `session configured, text-only + sarvam ${SARVAM_VOICES[voiceGender]} (${voiceGender})`
-        : `session configured, voice=${voiceName} (${voiceGender})`,
+        ? `session configured, sarvam ${SARVAM_VOICES[voiceGender]} (${voiceGender}), roast=${roastIntensity}`
+        : `session configured, voice=${voiceName} (${voiceGender}), roast=${roastIntensity}`,
     );
   };
 

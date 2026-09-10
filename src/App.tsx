@@ -6,7 +6,12 @@ import type { PreparedImage } from "./lib/imagePrep";
 import { MicCapture } from "./lib/micCapture";
 import { PcmPlayer, PLAYBACK_SAMPLE_RATE } from "./lib/pcmPlayer";
 import { deriveEyes, type EyePlacement, type MouthPlacement } from "./lib/placement";
-import { RealtimeLink, type SessionState, type VoiceChoice } from "./lib/realtime";
+import {
+  RealtimeLink,
+  type RoastLevel,
+  type SessionState,
+  type VoiceChoice,
+} from "./lib/realtime";
 
 /** Landing -> prepare the picture -> talk to it. */
 type Stage = "landing" | "preparing" | "talking";
@@ -47,7 +52,7 @@ const CHAIR_FALLBACK: Subject = {
   imageUrl: "/chair.svg",
   aspectRatio: 3 / 4,
   mouth: CHAIR_MOUTH,
-  eyes: { x: 0.5, y: 0.278, spacing: 0.207, radius: 0.049 },
+  eyes: { x: 0.5, y: 0.278, spacing: 0.207, radius: 0.049, rotation: 0 },
 };
 
 const STATE_LABELS: Record<SessionState, string> = {
@@ -83,6 +88,7 @@ export default function App() {
   const [textOnly, setTextOnly] = useState(false);
   const [typed, setTyped] = useState("");
   const [voice, setVoice] = useState<VoiceChoice>("male");
+  const [roast, setRoast] = useState<RoastLevel>("savage");
   const [showEyes, setShowEyes] = useState(true);
 
   const ctxRef = useRef<AudioContext | null>(null);
@@ -264,7 +270,7 @@ export default function App() {
         },
       });
       linkRef.current = link;
-      link.connect(subject.characterId, voice);
+      link.connect(subject.characterId, voice, roast);
 
       // A refused microphone should not end the experience. The realtime
       // session accepts typed input through the same voice, so we degrade to
@@ -310,7 +316,7 @@ export default function App() {
       teardown();
       setStage("preparing");
     }
-  }, [live, subject, teardown, voice]);
+  }, [live, subject, teardown, voice, roast]);
 
   const askTyped = useCallback(() => {
     const text = typed.trim();
@@ -440,8 +446,37 @@ export default function App() {
             </div>
             <p className="voice-hint">
               {subject.card?.suggestedVoice === "either" || !subject.card
-                ? "Malayalam has only these two voices. Pick whichever suits your picture."
+                ? "Pick whichever suits your picture."
                 : "Pre-selected from the artwork, but change it if you disagree."}
+            </p>
+          </fieldset>
+
+          <fieldset className="voice-picker">
+            <legend>കളിയാക്കൽ · Roast level</legend>
+            <div className="voice-options">
+              <label className={roast === "savage" ? "selected" : undefined}>
+                <input
+                  type="radio"
+                  name="roast"
+                  checked={roast === "savage"}
+                  onChange={() => setRoast("savage")}
+                />
+                Savage
+              </label>
+              <label className={roast === "normal" ? "selected" : undefined}>
+                <input
+                  type="radio"
+                  name="roast"
+                  checked={roast === "normal"}
+                  onChange={() => setRoast("normal")}
+                />
+                Normal
+              </label>
+            </div>
+            <p className="voice-hint">
+              {roast === "savage"
+                ? "Insults you in nearly every reply. It still answers the question, and never goes after your appearance or identity."
+                : "Teases you about every other reply, with warmer moments in between."}
             </p>
           </fieldset>
 

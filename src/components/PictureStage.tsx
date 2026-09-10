@@ -217,36 +217,45 @@ export function PictureStage({
                   preserveAspectRatio="none"
                   aria-hidden="true"
                 >
-                  {[0, 1].map((index) => {
-                    const cx =
-                      (eyes.x + (index === 0 ? -eyes.spacing / 2 : eyes.spacing / 2)) * 1000;
-                    const cy = eyes.y * viewHeight;
-                    const r = eyes.radius * 1000;
-                    return (
-                      <g
-                        key={index}
-                        ref={index === 0 ? leftEyeRef : rightEyeRef}
-                        className="eye"
-                      >
-                        <ellipse
-                          cx={cx}
-                          cy={cy}
-                          rx={r}
-                          ry={r * 1.12}
-                          fill="#fffdf7"
-                          stroke="#3a3128"
-                          strokeWidth={r * 0.14}
-                        />
-                        <circle
-                          ref={index === 0 ? leftPupilRef : rightPupilRef}
-                          cx={cx}
-                          cy={cy}
-                          r={r * 0.44}
-                          fill="#231f1a"
-                        />
-                      </g>
-                    );
-                  })}
+                  {/*
+                    Rotation is applied to a wrapper about the pair's midpoint, so
+                    the two eyes tilt together. It must sit outside the per-eye
+                    groups, which are reserved for the blink transform.
+                  */}
+                  <g
+                    transform={`rotate(${eyes.rotation} ${(eyes.x * 1000).toFixed(1)} ${(eyes.y * viewHeight).toFixed(1)})`}
+                  >
+                    {[0, 1].map((index) => {
+                      const cx =
+                        (eyes.x + (index === 0 ? -eyes.spacing / 2 : eyes.spacing / 2)) * 1000;
+                      const cy = eyes.y * viewHeight;
+                      const r = eyes.radius * 1000;
+                      return (
+                        <g
+                          key={index}
+                          ref={index === 0 ? leftEyeRef : rightEyeRef}
+                          className="eye"
+                        >
+                          <ellipse
+                            cx={cx}
+                            cy={cy}
+                            rx={r}
+                            ry={r * 1.12}
+                            fill="#fffdf7"
+                            stroke="#3a3128"
+                            strokeWidth={r * 0.14}
+                          />
+                          <circle
+                            ref={index === 0 ? leftPupilRef : rightPupilRef}
+                            cx={cx}
+                            cy={cy}
+                            r={r * 0.44}
+                            fill="#231f1a"
+                          />
+                        </g>
+                      );
+                    })}
+                  </g>
                 </svg>
               )}
 

@@ -629,7 +629,6 @@ body {
 
 .eyes-hit {
   position: absolute;
-  transform: translate(-50%, -50%);
   border-radius: 999px;
   outline: 1.5px dashed #ffffffcc;
   outline-offset: 4px;

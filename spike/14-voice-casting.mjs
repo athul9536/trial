@@ -127,7 +127,11 @@ async function finalistRound(speaker) {
   //
   // Range covers slower-than-normal: the reported artefact is the final English
   // word being rushed, and giving the voice more room is the obvious remedy.
-  for (const pace of [0.9, 0.95, 1.0]) {
+  // Both directions, because the two complaints pull opposite ways: the final
+  // English word sounds rushed (wants slower) while some earlier samples at 1.1
+  // were preferred (wants faster). Those earlier samples were pure Malayalam
+  // though, so they could not expose the rushing at all.
+  for (const pace of [0.95, 1.0, 1.05, 1.1]) {
     const id = `${speaker}-pace-${String(pace).replace(".", "")}`;
     process.stdout.write(`  ${id.padEnd(24)} `);
     const result = await synthesise({ text: MANGLISH_LINE, speaker, pace });

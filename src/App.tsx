@@ -29,9 +29,22 @@ interface CharacterCard {
   recognisedWork?: { isKnown: boolean; title: string; creator: string };
 }
 
+/**
+ * Identifies one sitting with one picture.
+ *
+ * Minted here rather than by the server, because it has to survive a page reload
+ * and a server restart. The provider cannot resume a session, so this is what
+ * lets the transcript be replayed back into a fresh one.
+ */
+function newConversationId(): string {
+  return crypto.randomUUID();
+}
+
 interface Subject {
   /** Undefined for the built-in chair, which the server already knows. */
   characterId?: string;
+  /** Stable across reconnects, so the character remembers the conversation. */
+  conversationId: string;
   label: string;
   imageUrl: string;
   aspectRatio: number;
@@ -48,13 +61,16 @@ const CHAIR_MOUTH: MouthPlacement = {
   rotation: 0,
 };
 
-const CHAIR_FALLBACK: Subject = {
-  label: "പഴയ പ്ലാസ്റ്റിക് കസേര",
-  imageUrl: "/chair.svg",
-  aspectRatio: 3 / 4,
-  mouth: CHAIR_MOUTH,
-  eyes: { x: 0.5, y: 0.278, spacing: 0.207, radius: 0.049, rotation: 0 },
-};
+function chairSubject(): Subject {
+  return {
+    conversationId: newConversationId(),
+    label: "പഴയ പ്ലാസ്റ്റിക് കസേര",
+    imageUrl: "/chair.svg",
+    aspectRatio: 3 / 4,
+    mouth: CHAIR_MOUTH,
+    eyes: { x: 0.5, y: 0.278, spacing: 0.207, radius: 0.049, rotation: 0 },
+  };
+}
 
 const STATE_LABELS: Record<SessionState, string> = {
   idle: "കാത്തിരിക്കുന്നു",
@@ -169,6 +185,9 @@ export default function App() {
 
     setSubject({
       characterId: snapshot.characterId,
+      // Reusing the stored id is what lets the character remember what was said
+      // before the reload, not just which picture it was.
+      conversationId: snapshot.conversationId ?? newConversationId(),
       label: snapshot.label,
       imageUrl: snapshot.imageUrl,
       aspectRatio: snapshot.aspectRatio,
@@ -189,6 +208,7 @@ export default function App() {
     if (!subject) return;
     saveSnapshot({
       characterId: subject.characterId,
+      conversationId: subject.conversationId,
       label: subject.label,
       imageUrl: subject.imageUrl,
       aspectRatio: subject.aspectRatio,
@@ -224,6 +244,7 @@ export default function App() {
       setVoice(card.suggestedVoice === "female" ? "female" : "male");
       setSubject({
         characterId: payload.id,
+        conversationId: newConversationId(),
         label: card.subjectLabel,
         imageUrl: image.dataUrl,
         aspectRatio: image.aspectRatio,
@@ -248,6 +269,7 @@ export default function App() {
         rotation: 0,
       };
       setSubject({
+        conversationId: newConversationId(),
         label: "ഈ ചിത്രത്തിലെ സാധനം",
         imageUrl: image.dataUrl,
         aspectRatio: image.aspectRatio,
@@ -264,7 +286,7 @@ export default function App() {
     setError("");
     setAnalysisNote("");
     setResumed(false);
-    setSubject(CHAIR_FALLBACK);
+    setSubject(chairSubject());
     setStage("preparing");
   }, []);
 
@@ -395,7 +417,7 @@ export default function App() {
         },
       });
       linkRef.current = link;
-      link.connect(subject.characterId, voice, roast);
+      link.connect(subject.characterId, voice, roast, subject.conversationId);
 
       // A refused microphone should not end the experience. The realtime
       // session accepts typed input through the same voice, so we degrade to

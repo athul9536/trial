@@ -365,6 +365,25 @@ Or keep the Sarvam code and just switch engines by setting `TTS_PROVIDER=azure`
 in `.env` and restarting. That restores echo cancellation and truncation at the
 cost of Manglish.
 
+## Surviving interruptions
+
+Three separate things can go wrong, and each is handled differently.
+
+**The connection drops.** The browser retries with backoff, and the transcript is
+replayed into the new session so the character still knows what was said. Voice
+Live cannot resume a session, so this is rebuilt rather than resumed.
+
+**The page reloads.** A `sessionStorage` snapshot brings back the picture, the
+mouth and eye placement, and the voice and roast choices. It stops at the prepare
+screen rather than reconnecting on its own.
+
+**The server restarts.** Character cards live in Redis, so an uploaded character
+survives. If Redis is unavailable the browser re-registers the card it still
+holds, so this works either way.
+
+None of the three depends on Redis being up. With it stopped, everything degrades
+to the previous behaviour rather than failing.
+
 ## Demoing it
 
 `docs/demo-script.md` has a two-minute run, the questions that reliably work, a
@@ -390,9 +409,9 @@ The Mona Lisa image is in the public domain, from
   just a starting point.
 - Character cards are held in memory and lost on server restart. An open tab
   will silently fall back to the demo chair.
-- **Reconnection loses conversation memory.** Voice Live has no session resume,
-  so a recovered session keeps the character's identity, voice and personality
-  but forgets what was said. Captions are cleared to reflect that.
+- Only the **last 12 turns** are remembered across a reconnect. Every replayed
+  turn counts toward the prompt, so this bounds latency and cost rather than
+  keeping everything.
 - **Responsive layout is untested.** Built and demoed on a laptop. It will
   probably work on a phone; nobody has checked.
 - **No unit tests**, only the integration smoke tests in `spike/`.

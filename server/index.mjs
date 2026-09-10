@@ -232,6 +232,12 @@ wss.on("connection", (browser, request) => {
   // Savage is the default: it is the funnier setting, and "normal" exists for
   // when strangers are trying it rather than the person who asked for it.
   const roastIntensity = params.get("roast") === "normal" ? "normal" : "savage";
+  // Identifies the conversation across reconnects and page reloads. Minted by
+  // the browser and kept in its session snapshot, because the provider offers no
+  // session resume of its own.
+  const conversationId = params.get("conversation");
+  /** Set once history has been replayed, so the greeting adapts. */
+  let resumedHistory = 0;
 
   // Instructions are assembled per connection rather than at analysis time,
   // because Malayalam self-description is gendered and depends on the chosen
@@ -245,6 +251,44 @@ wss.on("connection", (browser, request) => {
   let character = {
     instructions: buildInstructions(CHAIR.card, voiceGender, promptOptions),
     openingLine: CHAIR.openingLine,
+  };
+
+  /**
+   * Rebuild the conversation in a fresh provider session.
+   *
+   * Voice Live cannot resume a session, so a dropped connection or a page reload
+   * previously left the character with no memory of anything said. Replaying the
+   * stored turns as conversation items restores that context without generating
+   * any speech, so callbacks and running jokes survive an interruption.
+   *
+   * Costs one prompt's worth of tokens per turn, which is why the store caps how
+   * many are kept.
+   */
+  const replayHistory = async () => {
+    if (!conversationId || !session) return;
+
+    const turns = await characters.getTurns(conversationId);
+    if (turns.length === 0) return;
+
+    try {
+      for (const turn of turns) {
+        await session.addConversationItem({
+          type: "message",
+          role: turn.role === "assistant" ? "assistant" : "user",
+          content: [
+            turn.role === "assistant"
+              ? { type: "text", text: turn.text }
+              : { type: "input_text", text: turn.text },
+          ],
+        });
+      }
+      resumedHistory = turns.length;
+      log(`replayed ${turns.length} turns from the previous session`);
+    } catch (err) {
+      // Not fatal: the conversation simply starts fresh, which is how it behaved
+      // before this existed.
+      log(`history replay failed: ${err?.message}`);
+    }
   };
 
   const resolveCharacter = async () => {
@@ -574,6 +618,7 @@ wss.on("connection", (browser, request) => {
         if (text) {
           log(`user: ${text}`);
           send({ type: "userTranscript", text });
+          void characters.appendTurn(conversationId, { role: "user", text });
         }
       },
 
@@ -647,6 +692,7 @@ wss.on("connection", (browser, request) => {
         if (text) {
           log(`says: ${text}`);
           send({ type: "captionText", text });
+          void characters.appendTurn(conversationId, { role: "assistant", text });
         }
       },
 
@@ -661,7 +707,10 @@ wss.on("connection", (browser, request) => {
       onResponseTextDone: async (event) => {
         if (!USE_SARVAM) return;
         const full = event.text?.trim();
-        if (full) log(`says: ${full}`);
+        if (full) {
+          log(`says: ${full}`);
+          void characters.appendTurn(conversationId, { role: "assistant", text: full });
+        }
         replyTextComplete = true;
         // Speak whatever is left, including a reply with no final punctuation.
         flushSentences(true);
@@ -707,6 +756,8 @@ wss.on("connection", (browser, request) => {
         ? `session configured, sarvam ${SARVAM_VOICES[voiceGender]} (${voiceGender}), roast=${roastIntensity}`
         : `session configured, voice=${voiceName} (${voiceGender}), roast=${roastIntensity}`,
     );
+
+    await replayHistory();
   };
 
   browser.on("message", async (data, isBinary) => {
@@ -738,15 +789,18 @@ wss.on("connection", (browser, request) => {
       // showed one sentence while the audio spoke a different one.
       case "greet":
         try {
+          // Greeting someone mid-conversation would be wrong, so once history has
+          // been replayed the character picks up where it left off instead. This
+          // is also the moment a reconnect stops feeling like a failure.
+          const prompt =
+            resumedHistory > 0
+              ? "സംഭാഷണം ഇടയ്ക്ക് മുറിഞ്ഞു, ഇപ്പോൾ വീണ്ടും ബന്ധം കിട്ടി. ഒരു ചെറിയ വാചകത്തിൽ സംഭാഷണം തുടരുക — നേരത്തെ സംസാരിച്ച കാര്യം ഓർമ്മിപ്പിച്ചുകൊണ്ട്."
+              : `ആരോ നിന്റെ ചിത്രത്തിന് മുന്നിൽ വന്നു. ഇതുപോലെ ഒരു ചെറിയ വാചകത്തിൽ അവരെ അഭിവാദ്യം ചെയ്യുക: "${character.openingLine}"`;
+
           await session.addConversationItem({
             type: "message",
             role: "user",
-            content: [
-              {
-                type: "input_text",
-                text: `ആരോ നിന്റെ ചിത്രത്തിന് മുന്നിൽ വന്നു. ഇതുപോലെ ഒരു ചെറിയ വാചകത്തിൽ അവരെ അഭിവാദ്യം ചെയ്യുക: "${character.openingLine}"`,
-              },
-            ],
+            content: [{ type: "input_text", text: prompt }],
           });
           await session.sendEvent({ type: "response.create" });
         } catch (err) {
@@ -765,6 +819,11 @@ wss.on("connection", (browser, request) => {
         noteUserActivity();
         try {
           send({ type: "userTranscript", text });
+          // Recorded here as well as for spoken input. The audio transcription
+          // event only fires for speech, so without this a typed question was
+          // absent from the transcript and a replayed session saw the character
+          // answering a question nobody had asked.
+          void characters.appendTurn(conversationId, { role: "user", text });
           await session.addConversationItem({
             type: "message",
             role: "user",

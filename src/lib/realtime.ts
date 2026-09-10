@@ -50,7 +50,13 @@ const RETRY_DELAYS = [400, 900, 2000, 4000, 6000];
 
 export class RealtimeLink {
   private socket: WebSocket | null = null;
-  private target: { characterId?: string; voice: VoiceChoice; roast: RoastLevel } | null = null;
+  private target: {
+    characterId?: string;
+    voice: VoiceChoice;
+    roast: RoastLevel;
+    /** Lets a reconnected session be replayed back into context. */
+    conversationId?: string;
+  } | null = null;
   private attempt = 0;
   private retryTimer: number | null = null;
   /** False once the caller closes us, so a deliberate stop is not retried. */
@@ -72,9 +78,10 @@ export class RealtimeLink {
     characterId?: string,
     voice: VoiceChoice = "male",
     roast: RoastLevel = "savage",
+    conversationId?: string,
   ): void {
     if (this.socket) return;
-    this.target = { characterId, voice, roast };
+    this.target = { characterId, voice, roast, conversationId };
     this.wantConnection = true;
     this.attempt = 0;
     this.open();
@@ -103,6 +110,9 @@ export class RealtimeLink {
       roast: this.target.roast,
     });
     if (this.target.characterId) params.set("character", this.target.characterId);
+    if (this.target.conversationId) {
+      params.set("conversation", this.target.conversationId);
+    }
 
     const protocol = location.protocol === "https:" ? "wss:" : "ws:";
     const socket = new WebSocket(`${protocol}//${location.host}/realtime?${params}`);

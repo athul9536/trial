@@ -28,6 +28,11 @@ const MAX_BYTES = 4_000_000;
 export interface SessionSnapshot {
   /** Server-side id. May be forgotten by the server; the card covers that. */
   characterId?: string;
+  /**
+   * Identifies the conversation, so a reload resumes the same one and the
+   * character still remembers what was said rather than only which picture.
+   */
+  conversationId?: string;
   label: string;
   /** Data URL, so the picture survives without needing the original file. */
   imageUrl: string;

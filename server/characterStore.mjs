@@ -22,10 +22,24 @@ import { createClient } from "redis";
 /** Cards expire rather than accumulating forever. */
 const TTL_SECONDS = 60 * 60 * 24;
 
+/** Transcripts are shorter-lived than cards: they are for resuming, not history. */
+const TRANSCRIPT_TTL_SECONDS = 60 * 60 * 2;
+
+/**
+ * How many turns to keep and replay.
+ *
+ * Every replayed turn is added to the provider session and counts toward the
+ * prompt, so this trades memory against latency and cost. Twelve is about six
+ * exchanges, enough for callbacks to feel real without noticeably slowing the
+ * first reply.
+ */
+const MAX_TURNS = 12;
+
 /** Cap on the in-memory cache, independent of Redis. */
 const MAX_CACHED = 32;
 
 const KEY_PREFIX = "framinu:character:";
+const TRANSCRIPT_PREFIX = "framinu:transcript:";
 
 function newId() {
   return `c_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -33,6 +47,7 @@ function newId() {
 
 export async function createCharacterStore({ url, log = console.log } = {}) {
   const cache = new Map();
+  const transcripts = new Map();
   let redis = null;
 
   if (url) {
@@ -126,6 +141,71 @@ export async function createCharacterStore({ url, log = console.log } = {}) {
       }
 
       return null;
+    },
+
+    /**
+     * Record one turn of conversation.
+     *
+     * The provider has no session resume, so a dropped connection previously
+     * meant the character forgot everything said before it. Keeping the
+     * transcript here lets a new session be replayed into the same state.
+     *
+     * Stored as a capped list, oldest dropped first.
+     */
+    async appendTurn(conversationId, turn) {
+      if (!conversationId || !turn?.text) return;
+
+      const existing = transcripts.get(conversationId) ?? [];
+      const next = [...existing, turn].slice(-MAX_TURNS);
+      transcripts.set(conversationId, next);
+      while (transcripts.size > MAX_CACHED) {
+        transcripts.delete(transcripts.keys().next().value);
+      }
+
+      if (redis?.isReady) {
+        try {
+          const key = TRANSCRIPT_PREFIX + conversationId;
+          await redis.setEx(key, TRANSCRIPT_TTL_SECONDS, JSON.stringify(next));
+        } catch (err) {
+          log(`[store] transcript write failed: ${err?.message}`);
+        }
+      }
+    },
+
+    /** @returns {Promise<Array<{role: string, text: string}>>} oldest first */
+    async getTurns(conversationId) {
+      if (!conversationId) return [];
+
+      const cached = transcripts.get(conversationId);
+      if (cached) return cached;
+
+      if (redis?.isReady) {
+        try {
+          const raw = await redis.get(TRANSCRIPT_PREFIX + conversationId);
+          if (raw) {
+            const turns = JSON.parse(raw);
+            if (Array.isArray(turns)) {
+              transcripts.set(conversationId, turns);
+              return turns;
+            }
+          }
+        } catch (err) {
+          log(`[store] transcript read failed: ${err?.message}`);
+        }
+      }
+
+      return [];
+    },
+
+    /** Deliberate reset, so a new subject does not inherit an old conversation. */
+    async clearTurns(conversationId) {
+      if (!conversationId) return;
+      transcripts.delete(conversationId);
+      if (redis?.isReady) {
+        try {
+          await redis.del(TRANSCRIPT_PREFIX + conversationId);
+        } catch {}
+      }
     },
 
     async close() {

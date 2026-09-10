@@ -200,6 +200,7 @@ body {
 .status-thinking .status-dot { background: #d09b25; animation: pulse 0.8s infinite; }
 .status-speaking .status-dot { background: var(--accent); animation: pulse 0.55s infinite; }
 .status-connecting .status-dot { background: #6b8fb3; animation: pulse 1s infinite; }
+.status-reconnecting .status-dot { background: #d0762a; animation: pulse 0.7s infinite; }
 .status-error .status-dot { background: #b3261e; }
 
 @keyframes pulse {

@@ -20,25 +20,42 @@ export type SessionState =
   | "listening"
   | "thinking"
   | "speaking"
+  | "reconnecting"
   | "error"
   | "ended";
 
 export type ServerMessage =
-  | { type: "state"; state: Exclude<SessionState, "speaking"> }
+  | { type: "state"; state: Exclude<SessionState, "speaking" | "reconnecting"> }
   | { type: "captionText"; text: string }
   | { type: "userTranscript"; text: string }
   | { type: "responseStart"; itemId: string }
   | { type: "interrupted" }
+  /** The server no longer knows this character, most likely after a restart. */
+  | { type: "characterMissing" }
   | { type: "error"; message: string };
 
 export interface RealtimeHandlers {
   onAudio: (pcm16: ArrayBuffer) => void;
   onMessage: (message: ServerMessage) => void;
+  /** Connection dropped and a retry is scheduled. */
+  onReconnecting: (attempt: number, delayMs: number) => void;
+  /** A retry succeeded. The provider session is new, so context is lost. */
+  onReconnected: () => void;
+  /** Gave up, or the caller closed us deliberately. */
   onClosed: () => void;
 }
 
+/** Backoff schedule in ms. Runs out rather than retrying forever. */
+const RETRY_DELAYS = [400, 900, 2000, 4000, 6000];
+
 export class RealtimeLink {
   private socket: WebSocket | null = null;
+  private target: { characterId?: string; voice: VoiceChoice; roast: RoastLevel } | null = null;
+  private attempt = 0;
+  private retryTimer: number | null = null;
+  /** False once the caller closes us, so a deliberate stop is not retried. */
+  private wantConnection = false;
+  private everConnected = false;
 
   constructor(private readonly handlers: RealtimeHandlers) {}
 
@@ -57,14 +74,47 @@ export class RealtimeLink {
     roast: RoastLevel = "savage",
   ): void {
     if (this.socket) return;
+    this.target = { characterId, voice, roast };
+    this.wantConnection = true;
+    this.attempt = 0;
+    this.open();
+  }
 
-    const params = new URLSearchParams({ voice, roast });
-    if (characterId) params.set("character", characterId);
+  /**
+   * Reconnect to a different character id.
+   *
+   * Used after the server reports it has forgotten the character, typically
+   * because it restarted while the page stayed open. Without this the session
+   * silently comes back as the demo chair instead of the uploaded picture.
+   */
+  reconnectAs(characterId: string): void {
+    if (!this.target) return;
+    this.target = { ...this.target, characterId };
+    this.attempt = 0;
+    this.closeSocket();
+    this.open();
+  }
+
+  private open(): void {
+    if (!this.target) return;
+
+    const params = new URLSearchParams({
+      voice: this.target.voice,
+      roast: this.target.roast,
+    });
+    if (this.target.characterId) params.set("character", this.target.characterId);
 
     const protocol = location.protocol === "https:" ? "wss:" : "ws:";
     const socket = new WebSocket(`${protocol}//${location.host}/realtime?${params}`);
     socket.binaryType = "arraybuffer";
     this.socket = socket;
+
+    socket.onopen = () => {
+      const wasRetrying = this.attempt > 0;
+      this.attempt = 0;
+      if (wasRetrying) this.handlers.onReconnected();
+      this.everConnected = true;
+    };
 
     socket.onmessage = (event) => {
       if (event.data instanceof ArrayBuffer) {
@@ -80,15 +130,50 @@ export class RealtimeLink {
 
     socket.onclose = () => {
       this.socket = null;
-      this.handlers.onClosed();
+      if (!this.wantConnection) {
+        this.handlers.onClosed();
+        return;
+      }
+      this.scheduleRetry();
     };
 
-    socket.onerror = () => {
+    // onerror always precedes onclose, so the retry is driven from onclose alone
+    // to avoid counting a single failure twice.
+    socket.onerror = () => {};
+  }
+
+  private scheduleRetry(): void {
+    if (this.attempt >= RETRY_DELAYS.length) {
+      this.wantConnection = false;
       this.handlers.onMessage({
         type: "error",
-        message: "Lost the connection to the server. Is it running?",
+        message: this.everConnected
+          ? "Lost the connection and could not get it back. Press Stop, then wake the picture again."
+          : "Could not reach the server. Is it running?",
       });
-    };
+      this.handlers.onClosed();
+      return;
+    }
+
+    const delay = RETRY_DELAYS[this.attempt];
+    this.attempt += 1;
+    this.handlers.onReconnecting(this.attempt, delay);
+
+    this.retryTimer = window.setTimeout(() => {
+      this.retryTimer = null;
+      if (this.wantConnection) this.open();
+    }, delay);
+  }
+
+  private closeSocket(): void {
+    const socket = this.socket;
+    this.socket = null;
+    if (socket) {
+      socket.onclose = null;
+      socket.onmessage = null;
+      socket.onopen = null;
+      socket.close();
+    }
   }
 
   private get isOpen(): boolean {
@@ -109,11 +194,12 @@ export class RealtimeLink {
   }
 
   close(): void {
-    const socket = this.socket;
-    this.socket = null;
-    if (socket) {
-      socket.onclose = null;
-      socket.close();
+    // Set before closing so onclose knows this was deliberate and does not retry.
+    this.wantConnection = false;
+    if (this.retryTimer !== null) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
     }
+    this.closeSocket();
   }
 }

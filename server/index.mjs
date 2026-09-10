@@ -161,6 +161,33 @@ app.post("/api/analyse", async (req, res) => {
 });
 
 /**
+ * Re-register a card the client already holds.
+ *
+ * Cards live in memory only, so a server restart forgets them while the browser
+ * still has the picture on screen. Rather than silently reverting to the demo
+ * chair, the client sends the card back and carries on with the same character.
+ *
+ * The card is re-validated on the way in: it arrives from the client, so it is
+ * no more trustworthy than any other request body.
+ */
+app.post("/api/character/restore", (req, res) => {
+  const incoming = req.body?.card;
+  if (!incoming || typeof incoming !== "object") {
+    return res.status(400).json({ error: "Expected a character card." });
+  }
+
+  const { card } = validateCard({
+    ...incoming,
+    // validateCard reads the mouth from mouthSuggestion, which is the shape the
+    // vision model returns rather than the shape we hand to the client.
+    mouthSuggestion: incoming.mouth ?? incoming.mouthSuggestion,
+  });
+  const id = storeCharacter(card);
+  console.log(`[restore] "${card.subjectLabel}" re-registered as ${id}`);
+  res.json({ id, card });
+});
+
+/**
  * Manual fallback for when analysis fails or the subject is misread. The user
  * describes the subject themselves and we build a card from that.
  */
@@ -202,9 +229,12 @@ wss.on("connection", (browser, request) => {
   const roastIntensity = params.get("roast") === "normal" ? "normal" : "savage";
 
   const stored = requestedId ? characters.get(requestedId) : null;
-  if (requestedId && !stored) {
-    // Most likely the server restarted while the page stayed open.
-    log(`unknown character "${requestedId}", falling back to the chair`);
+  const characterMissing = Boolean(requestedId) && !stored;
+  if (characterMissing) {
+    // Cards live in memory, so a restart loses them. Silently falling back to
+    // the chair would be the worst outcome: not an error, just quietly the wrong
+    // character. Tell the client so it can re-register the card it still holds.
+    log(`unknown character "${requestedId}", asking the client to restore it`);
   }
 
   // Instructions are assembled here rather than at analysis time, because
@@ -517,9 +547,8 @@ wss.on("connection", (browser, request) => {
         if (DEBUG) log("event", event.type);
       },
 
-      onSessionUpdated: async (event) => {
-        const voiceName = event.session?.voice?.name;
-        log(`session ready, voice=${voiceName}`);
+      onSessionUpdated: async () => {
+        if (characterMissing) send({ type: "characterMissing" });
         send({ type: "state", state: "ready" });
       },
 

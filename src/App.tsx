@@ -62,6 +62,7 @@ const STATE_LABELS: Record<SessionState, string> = {
   listening: "കേൾക്കുന്നു...",
   thinking: "ആലോചിക്കുന്നു...",
   speaking: "സംസാരിക്കുന്നു...",
+  reconnecting: "വീണ്ടും ബന്ധിപ്പിക്കുന്നു...",
   error: "പ്രശ്നം",
   ended: "അവസാനിച്ചു",
 };
@@ -247,6 +248,34 @@ export default function App() {
       const player = new PcmPlayer(ctx);
       playerRef.current = player;
 
+      /**
+       * Hand the card back to a server that has forgotten it, then reconnect
+       * with the new id. The demo chair needs no restore: it is built into the
+       * server rather than stored per upload.
+       */
+      const restoreCharacter = async () => {
+        const card = subject.card;
+        if (!card) return;
+        try {
+          const response = await fetch("/api/character/restore", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ card }),
+          });
+          const payload = await response.json();
+          if (!response.ok || !payload.id) throw new Error(payload.error ?? "restore failed");
+
+          setSubject((current) =>
+            current ? { ...current, characterId: payload.id } : current,
+          );
+          linkRef.current?.reconnectAs(payload.id);
+        } catch {
+          setError(
+            "The server restarted and lost this picture's character. Press Stop and wake it again.",
+          );
+        }
+      };
+
       const link = new RealtimeLink({
         onAudio: (pcm) => player.enqueue(pcm),
         onMessage: (message) => {
@@ -285,11 +314,34 @@ export default function App() {
               player.clear();
               break;
             }
+            case "characterMissing":
+              // The server restarted and lost the card. We still have it, so
+              // hand it back and reconnect rather than quietly continuing as
+              // the demo chair.
+              void restoreCharacter();
+              break;
             case "error":
               setError(message.message);
               setState("error");
               break;
           }
+        },
+        onReconnecting: (attempt, delayMs) => {
+          setState("reconnecting");
+          // Whatever was mid-sentence will never finish, so drop it and shut
+          // the mouth instead of leaving it frozen mid-word.
+          player.clear();
+          setError(
+            `Connection dropped. Retrying in ${Math.round(delayMs / 1000) || 1}s (attempt ${attempt}).`,
+          );
+        },
+        onReconnected: () => {
+          setError("");
+          setState("ready");
+          // Worth saying plainly: the provider gives us a fresh session, so the
+          // character is itself again but has forgotten the conversation.
+          setCaption("");
+          setUserSaid("");
         },
         onClosed: () => {
           setState("ended");

@@ -20,6 +20,7 @@ import { CHAIR, buildSessionConfig } from "./character.mjs";
 import { analyseImage, VisionError, visionModelName } from "./vision.mjs";
 import { buildInstructions, validateCard } from "./characterCard.mjs";
 import { SARVAM_VOICES, speak as sarvamSpeak } from "./sarvamTts.mjs";
+import { createCharacterStore } from "./characterStore.mjs";
 
 const PORT = Number(process.env.PORT ?? 8787);
 const ENDPOINT = process.env.AZURE_VOICELIVE_ENDPOINT;
@@ -61,6 +62,7 @@ app.get("/api/health", (_req, res) => {
     ttsProvider: TTS_PROVIDER,
     voices: USE_SARVAM ? SARVAM_VOICES : VOICES,
     visionModel: visionModelName,
+    characterStore: characters.backend,
   });
 });
 
@@ -80,22 +82,18 @@ app.get("/api/character", (_req, res) => {
  * we do not persist uploaded images, transcripts or generated personalities.
  * Bounded so a long session cannot grow without limit.
  */
-const characters = new Map();
-const MAX_CHARACTERS = 24;
-
 /**
  * We store the card, not finished instructions, because the prompt depends on
  * the voice the user picks afterwards. Malayalam self-descriptions are gendered,
  * so the same card produces two different prompts.
+ *
+ * Backed by Redis when REDIS_URL is set, memory otherwise. Nothing depends on
+ * Redis being up.
  */
-function storeCharacter(card) {
-  const id = `c_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-  characters.set(id, { card });
-  while (characters.size > MAX_CHARACTERS) {
-    characters.delete(characters.keys().next().value);
-  }
-  return id;
-}
+const characters = await createCharacterStore({
+  url: process.env.REDIS_URL,
+  log: (message) => console.log(message),
+});
 
 /** Malayalam has exactly two voices on Azure, so this is the whole palette. */
 const VOICES = {
@@ -150,7 +148,7 @@ app.post("/api/analyse", async (req, res) => {
   try {
     const raw = await analyseImage(dataUrl);
     const { card, warnings } = validateCard(raw);
-    const id = storeCharacter(card);
+    const id = await characters.store(card);
 
     console.log(
       `[analyse] ${card.subjectType} "${card.subjectLabel}" in ${Date.now() - startedAt}ms` +
@@ -177,7 +175,7 @@ app.post("/api/analyse", async (req, res) => {
  * The card is re-validated on the way in: it arrives from the client, so it is
  * no more trustworthy than any other request body.
  */
-app.post("/api/character/restore", (req, res) => {
+app.post("/api/character/restore", async (req, res) => {
   const incoming = req.body?.card;
   if (!incoming || typeof incoming !== "object") {
     return res.status(400).json({ error: "Expected a character card." });
@@ -189,7 +187,7 @@ app.post("/api/character/restore", (req, res) => {
     // vision model returns rather than the shape we hand to the client.
     mouthSuggestion: incoming.mouth ?? incoming.mouthSuggestion,
   });
-  const id = storeCharacter(card);
+  const id = await characters.store(card);
   console.log(`[restore] "${card.subjectLabel}" re-registered as ${id}`);
   res.json({ id, card });
 });
@@ -198,7 +196,7 @@ app.post("/api/character/restore", (req, res) => {
  * Manual fallback for when analysis fails or the subject is misread. The user
  * describes the subject themselves and we build a card from that.
  */
-app.post("/api/character/manual", (req, res) => {
+app.post("/api/character/manual", async (req, res) => {
   const label = typeof req.body?.label === "string" ? req.body.label : "";
   if (!label.trim()) {
     return res.status(400).json({ error: "Describe the subject in a few words." });
@@ -210,7 +208,7 @@ app.post("/api/character/manual", (req, res) => {
     visibleDetails: Array.isArray(req.body?.visibleDetails) ? req.body.visibleDetails : [],
     mouthSuggestion: req.body?.mouth,
   });
-  const id = storeCharacter(card);
+  const id = await characters.store(card);
   res.json({ id, card, warnings: [], elapsedMs: 0 });
 });
 
@@ -235,30 +233,38 @@ wss.on("connection", (browser, request) => {
   // when strangers are trying it rather than the person who asked for it.
   const roastIntensity = params.get("roast") === "normal" ? "normal" : "savage";
 
-  const stored = requestedId ? characters.get(requestedId) : null;
-  const characterMissing = Boolean(requestedId) && !stored;
-  if (characterMissing) {
-    // Cards live in memory, so a restart loses them. Silently falling back to
-    // the chair would be the worst outcome: not an error, just quietly the wrong
-    // character. Tell the client so it can re-register the card it still holds.
-    log(`unknown character "${requestedId}", asking the client to restore it`);
-  }
-
-  // Instructions are assembled here rather than at analysis time, because
-  // Malayalam self-description is gendered and depends on the chosen voice.
-  // Code-mixing is only allowed when Sarvam is speaking: Azure's ml-IN voices
-  // render mixed script unintelligibly.
+  // Instructions are assembled per connection rather than at analysis time,
+  // because Malayalam self-description is gendered and depends on the chosen
+  // voice. Code-mixing is only allowed when Sarvam is speaking: Azure's ml-IN
+  // voices render mixed script unintelligibly.
   const promptOptions = { allowCodeMixing: USE_SARVAM, roastIntensity };
 
-  const character = stored
-    ? {
-        instructions: buildInstructions(stored.card, voiceGender, promptOptions),
-        openingLine: stored.card.openingLine,
-      }
-    : {
-        instructions: buildInstructions(CHAIR.card, voiceGender, promptOptions),
-        openingLine: CHAIR.openingLine,
+  // Resolved inside start(), since the card lookup is async once it can come
+  // from Redis. Read afterwards by the greet and escape handlers.
+  let characterMissing = false;
+  let character = {
+    instructions: buildInstructions(CHAIR.card, voiceGender, promptOptions),
+    openingLine: CHAIR.openingLine,
+  };
+
+  const resolveCharacter = async () => {
+    if (!requestedId) return;
+
+    const card = await characters.get(requestedId);
+    if (card) {
+      character = {
+        instructions: buildInstructions(card, voiceGender, promptOptions),
+        openingLine: card.openingLine,
       };
+      return;
+    }
+
+    // Falling back to the chair silently would be the worst outcome: not an
+    // error, just quietly the wrong character. Tell the client instead, so it
+    // can re-register the card it still holds.
+    characterMissing = true;
+    log(`unknown character "${requestedId}", asking the client to restore it`);
+  };
 
   let session = null;
   let subscription = null;
@@ -547,6 +553,8 @@ wss.on("connection", (browser, request) => {
 
   const start = async () => {
     send({ type: "state", state: "connecting" });
+    // Before the session is configured, since the instructions depend on it.
+    await resolveCharacter();
     session = client.createSession({ model: MODEL });
 
     subscription = session.subscribe({
@@ -864,6 +872,7 @@ httpServer.listen(PORT, () => {
       : `  voices ${VOICES.male} / ${VOICES.female}`,
   );
   console.log(`  vision ${visionModelName}   stt ${STT_LANGUAGES}`);
+  console.log(`  cards  ${characters.backend}`);
 
   if (USE_SARVAM && !process.env.SARVAM_API_KEY) {
     console.warn("  [warn] TTS_PROVIDER=sarvam but SARVAM_API_KEY is missing; replies will be silent");

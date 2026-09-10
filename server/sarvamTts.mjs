@@ -50,6 +50,13 @@ export async function speak({ text, gender, signal, onChunk }) {
   const trimmed = (text ?? "").trim();
   if (!trimmed) return { bytes: 0, firstChunkMs: null };
 
+  // Second line of defence. Sarvam rejects text with no letters from a supported
+  // language, so a punctuation-only fragment would come back as a 400 and show
+  // the user an error for something that has no audio anyway.
+  if (!/[\u0D00-\u0D7FA-Za-z]/.test(trimmed)) {
+    return { bytes: 0, firstChunkMs: null };
+  }
+
   const startedAt = Date.now();
   let response;
 

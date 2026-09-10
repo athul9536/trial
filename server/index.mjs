@@ -267,19 +267,26 @@ wss.on("connection", (browser, request) => {
   /**
    * Minimum length before a fragment gets its own request.
    *
-   * Deliberately small, because the character opens nearly every reply with a
-   * short interjection like "ഓഹോ..." — flushing that immediately gets first audio
-   * out fast, and the beat before the rest of the sentence is exactly the comic
-   * timing we want anyway. A larger minimum made the whole reply wait.
+   * Every fragment is synthesised as an isolated utterance, so a fragment that
+   * is not a natural unit of speech gets sentence-final intonation applied to
+   * something that is not a sentence. That is what makes words near the seams
+   * sound subtly wrong.
+   *
+   * Higher values mean fewer, more natural fragments and slightly later first
+   * audio. 12 is enough to stop a bare interjection like "അയ്യോ..." being spoken
+   * on its own, so it stays attached to the clause that follows it.
    */
-  const MIN_FLUSH_CHARS = 7;
+  const MIN_FLUSH_CHARS = Number(process.env.TTS_MIN_FLUSH_CHARS ?? 12);
 
   /**
-   * Malayalam replies here often run comma-heavy with no full stop until the
-   * end, so without a secondary split point the first audio waits for the entire
-   * reply. Above this length we allow a clause break to act as one.
+   * Splitting at commas was measurably worse for quality: a comma is not an
+   * utterance boundary, so the model applied a falling, finished-sentence
+   * contour to text that was still mid-thought.
+   *
+   * Off by default. Enable only if first-audio latency matters more than how the
+   * speech sounds.
    */
-  const CLAUSE_SPLIT_CHARS = 42;
+  const CLAUSE_SPLIT_CHARS = Number(process.env.TTS_CLAUSE_SPLIT_CHARS ?? 0);
 
   const stopSarvam = () => {
     // Bumping the generation makes queued sentences no-ops without needing to
@@ -343,8 +350,26 @@ wss.on("connection", (browser, request) => {
     }
   };
 
+  /**
+   * Does this fragment contain anything actually speakable?
+   *
+   * Splitting can leave a remainder of pure punctuation — a reply ending
+   * "ചിരിക്കും...!" flushes at the ellipsis and leaves "!" behind. Sarvam rejects
+   * that with "Text must contain at least one character from the allowed
+   * languages", which surfaced as an occasional failed reply.
+   *
+   * Malayalam script or Latin letters both count, since code-mixing is allowed.
+   */
+  const hasSpeakableContent = (text) => /[\u0D00-\u0D7FA-Za-z]/.test(text);
+
   /** Queue a sentence, keeping playback order by chaining the promises. */
   const enqueueSentence = (text) => {
+    // Dropped rather than sent: a lone "!" carries no audio anyway, and sending
+    // it costs a failed request and an error banner.
+    if (!hasSpeakableContent(text)) {
+      if (DEBUG) log(`skipped unspeakable fragment: ${JSON.stringify(text)}`);
+      return;
+    }
     const generation = ttsGeneration;
     pendingSpeech += 1;
     spokenText = `${spokenText} ${text}`.trim();
@@ -354,30 +379,48 @@ wss.on("connection", (browser, request) => {
   };
 
   /**
-   * Pull complete sentences out of the buffer.
+   * Pull the earliest usable sentence out of the buffer.
    *
-   * Splitting at the LAST terminator rather than the first avoids cutting inside
-   * an ellipsis, which the character uses constantly for comic timing.
+   * Two things this has to get right:
+   *
+   * A run of dots is one terminator. The character uses "..." constantly for
+   * comic timing, and splitting inside it produces two broken fragments.
+   *
+   * We take the EARLIEST terminator that yields a long-enough fragment, not the
+   * last. Taking the last maximised fragment size, which sounds better but meant
+   * most replies waited for the entire text before any audio started, defeating
+   * the point of incremental synthesis.
    */
   const flushSentences = (force) => {
-    let lastEnd = -1;
     for (let i = 0; i < sentenceBuffer.length; i++) {
-      if (".!?…".includes(sentenceBuffer[i])) lastEnd = i;
-    }
+      if (!".!?…".includes(sentenceBuffer[i])) continue;
 
-    if (lastEnd >= 0) {
-      const candidate = sentenceBuffer.slice(0, lastEnd + 1).trim();
-      // Hold very short fragments back, or the audio arrives in choppy bursts.
-      if (candidate.length >= MIN_FLUSH_CHARS || force) {
-        sentenceBuffer = sentenceBuffer.slice(lastEnd + 1);
-        if (candidate) enqueueSentence(candidate);
-        return;
+      // Advance past the whole run so "..." is treated as a single boundary.
+      let end = i;
+      while (end + 1 < sentenceBuffer.length && ".…".includes(sentenceBuffer[end + 1])) {
+        end += 1;
       }
+
+      // A trailing run at the very end of the buffer may still be growing, so
+      // wait unless we are forcing the flush.
+      if (!force && end === sentenceBuffer.length - 1 && ".…".includes(sentenceBuffer[end])) {
+        break;
+      }
+
+      const candidate = sentenceBuffer.slice(0, end + 1).trim();
+      if (candidate.length < MIN_FLUSH_CHARS) {
+        i = end; // too short on its own; keep it attached to what follows
+        continue;
+      }
+
+      sentenceBuffer = sentenceBuffer.slice(end + 1);
+      if (candidate) enqueueSentence(candidate);
+      return;
     }
 
-    // No usable sentence end, but the buffer is getting long: break at the last
-    // clause boundary so speech can start.
-    if (!force && sentenceBuffer.length >= CLAUSE_SPLIT_CHARS) {
+    // Optional fallback, disabled by default. Breaks mid-thought at a clause
+    // boundary to start speech sooner, at a cost in naturalness.
+    if (!force && CLAUSE_SPLIT_CHARS > 0 && sentenceBuffer.length >= CLAUSE_SPLIT_CHARS) {
       let clauseEnd = -1;
       for (let i = 0; i < sentenceBuffer.length; i++) {
         if (",;:".includes(sentenceBuffer[i])) clauseEnd = i;

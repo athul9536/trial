@@ -34,6 +34,23 @@ function loadImage(objectUrl: string): Promise<HTMLImageElement> {
   });
 }
 
+/**
+ * Load a bundled example image and prepare it like an upload.
+ *
+ * Exists so a demo does not involve hunting through a file picker on stage.
+ * SVG examples work too: the browser rasterises them into the canvas, so what
+ * reaches the vision model is a normal JPEG either way.
+ */
+export async function prepareFromUrl(url: string): Promise<PreparedImage> {
+  const image = await loadImage(url);
+  // Same-origin, so the canvas is not tainted and toDataURL still works.
+  return drawToDataUrl(
+    image,
+    image.naturalWidth || image.width,
+    image.naturalHeight || image.height,
+  );
+}
+
 export async function prepareImage(file: File): Promise<PreparedImage> {
   if (!ACCEPTED_TYPES.includes(file.type)) {
     throw new ImagePrepError(

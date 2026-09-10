@@ -3,6 +3,7 @@ import {
   ACCEPTED_TYPES,
   drawToDataUrl,
   ImagePrepError,
+  prepareFromUrl,
   prepareImage,
   type PreparedImage,
 } from "../lib/imagePrep";
@@ -12,6 +13,18 @@ interface Props {
   onUseChair: () => void;
   disabled?: boolean;
 }
+
+/**
+ * One-tap demo subjects, so presenting does not involve a file picker.
+ *
+ * Chosen to cover three different behaviours: a recognised artwork, a Kerala
+ * food subject, and a plain object with no face at all.
+ */
+const EXAMPLES = [
+  { url: "/examples/mona-lisa.jpg", label: "മോണാലിസ", hint: "recognises the painting" },
+  { url: "/examples/appam.svg", label: "അപ്പം", hint: "counts its own holes" },
+  { url: "/chair.svg", label: "കസേര", hint: "no face required" },
+];
 
 export function UploadPanel({ onImage, onUseChair, disabled }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -40,6 +53,18 @@ export function UploadPanel({ onImage, onUseChair, disabled }: Props) {
         setError(
           err instanceof ImagePrepError ? err.message : "Could not read that image.",
         );
+      }
+    },
+    [onImage],
+  );
+
+  const loadExample = useCallback(
+    async (url: string) => {
+      setError("");
+      try {
+        onImage(await prepareFromUrl(url));
+      } catch {
+        setError("Could not load that example. Upload a photo instead.");
       }
     },
     [onImage],
@@ -118,8 +143,26 @@ export function UploadPanel({ onImage, onUseChair, disabled }: Props) {
             }}
           />
 
+          <div className="examples">
+            <span>അല്ലെങ്കിൽ ഇതിലൊന്ന് · or try one of these</span>
+            <div className="example-row">
+              {EXAMPLES.map((example) => (
+                <button
+                  key={example.url}
+                  className="example-btn"
+                  disabled={disabled}
+                  onClick={() => void loadExample(example.url)}
+                >
+                  <img src={example.url} alt="" aria-hidden="true" />
+                  <strong>{example.label}</strong>
+                  <em>{example.hint}</em>
+                </button>
+              ))}
+            </div>
+          </div>
+
           <button className="link-btn" onClick={onUseChair} disabled={disabled}>
-            or argue with the demo chair
+            skip straight to the demo chair
           </button>
         </>
       )}

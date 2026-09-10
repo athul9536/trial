@@ -109,8 +109,15 @@ function resolveVoice(requested) {
 
 const ALLOWED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 
-/** How long the user may stay silent before the character prods them. */
-const IDLE_PROD_MS = 10000;
+/**
+ * How long the user may stay silent before the character prods them.
+ *
+ * 20 seconds rather than 10, because a presenter pauses to explain things to the
+ * room. At 10s the character talked over those explanations, and with
+ * push-to-talk it has no way of knowing you are busy addressing humans.
+ * Configurable so it can be pushed further out for a long presentation.
+ */
+const IDLE_PROD_MS = Number(process.env.IDLE_PROD_MS ?? 20000);
 
 /** Stop after this many unanswered prods, so it nags rather than harasses. */
 const IDLE_PROD_LIMIT = 3;

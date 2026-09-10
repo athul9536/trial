@@ -365,6 +365,18 @@ Or keep the Sarvam code and just switch engines by setting `TTS_PROVIDER=azure`
 in `.env` and restarting. That restores echo cancellation and truncation at the
 cost of Manglish.
 
+## Demoing it
+
+`docs/demo-script.md` has a two-minute run, the questions that reliably work, a
+pre-demo checklist, and what to do when something fails on stage.
+
+Three one-tap examples are bundled on the landing screen so a demo does not
+involve a file picker: the Mona Lisa (shows artwork recognition), an appam
+(Kerala-specific humour), and the chair (proves no face is needed).
+
+The Mona Lisa image is in the public domain, from
+[Wikimedia Commons](https://commons.wikimedia.org/wiki/File:Mona_Lisa,_by_Leonardo_da_Vinci,_from_C2RMF_retouched.jpg).
+
 ## Known limitations
 
 - First audio arrives in roughly 3 seconds on both paths. Most of that is Voice
@@ -378,9 +390,11 @@ cost of Manglish.
   just a starting point.
 - Character cards are held in memory and lost on server restart. An open tab
   will silently fall back to the demo chair.
-- **Reconnection is not implemented.** A dropped WebSocket ends the session and
-  you have to wake the picture again. This is the biggest remaining demo risk:
-  a transient DNS blip killed a test run during development, so it is not
-  hypothetical.
+- **Reconnection loses conversation memory.** Voice Live has no session resume,
+  so a recovered session keeps the character's identity, voice and personality
+  but forgets what was said. Captions are cleared to reflect that.
+- **Responsive layout is untested.** Built and demoed on a laptop. It will
+  probably work on a phone; nobody has checked.
+- **No unit tests**, only the integration smoke tests in `spike/`.
 - One speaking subject per image. No multi-character conversations.
 - No unit tests yet, only the integration smoke tests above.

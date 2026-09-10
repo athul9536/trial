@@ -34,6 +34,30 @@ const PACE = Number(process.env.SARVAM_PACE ?? 1.0);
 export class SarvamError extends Error {}
 
 /**
+ * Punctuation clean-up applied only to the text we send for synthesis.
+ *
+ * Semicolons and colons are read straight through with no pause, so
+ * "നൂറ്റാണ്ടായി pose; ചായ ഇല്ല" came out as one breathless run. Commas do produce
+ * a pause, so they get swapped. The model reaches for semicolons often enough
+ * that relying on a prompt rule alone would leave this happening intermittently.
+ *
+ * Captions are left untouched: a semicolon reads perfectly well on screen, and
+ * this is purely about how the words are spoken.
+ */
+function normaliseForSpeech(text) {
+  return (
+    text
+      // Single-character ellipsis is less reliable than three dots.
+      .replace(/…/g, "...")
+      .replace(/\s*[;:]\s*/g, ", ")
+      // Collapse any doubled commas the swap may have produced.
+      .replace(/,\s*,+/g, ",")
+      .replace(/\s+/g, " ")
+      .trim()
+  );
+}
+
+/**
  * Synthesise text and hand raw PCM16 chunks to a callback as they arrive.
  *
  * @param {object} options
@@ -70,7 +94,7 @@ export async function speak({ text, gender, signal, onChunk }) {
       body: JSON.stringify({
         // Bulbul caps at 2500 characters; our replies are far shorter, but a
         // runaway response should not produce a 400 instead of speech.
-        text: trimmed.slice(0, 2400),
+        text: normaliseForSpeech(trimmed).slice(0, 2400),
         target_language_code: "ml-IN",
         model: MODEL,
         speaker: SARVAM_VOICES[gender === "female" ? "female" : "male"],

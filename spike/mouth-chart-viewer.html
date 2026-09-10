@@ -1,0 +1,575 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Spike 22 — mouth chart</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; padding: 24px; background: #17140f; color: #efe7d8;
+    font: 14px/1.5 ui-sans-serif, system-ui, sans-serif;
+  }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  p.sub { margin: 0 0 20px; color: #a89e8c; max-width: 780px; }
+  .row { display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-start; }
+  .panel { background: #201c16; border: 1px solid #362f25; border-radius: 10px; padding: 14px; }
+  .panel h2 { font-size: 13px; margin: 0 0 10px; color: #c9bda6; font-weight: 600; }
+  canvas, img.raw { display: block; border-radius: 6px; background: #000; }
+  img.raw { width: 190px; }
+  .strip { display: flex; gap: 10px; }
+  .strip figure { margin: 0; }
+  .strip figcaption { font-size: 11px; color: #a89e8c; margin-top: 4px; text-align: center; }
+  label { display: block; margin: 7px 0; font-size: 12px; color: #c9bda6; }
+  label span { display: inline-block; min-width: 134px; }
+  input[type=range] { width: 178px; vertical-align: middle; }
+  output { color: #efe7d8; font-variant-numeric: tabular-nums; margin-left: 6px; }
+  button {
+    background: #3a3225; color: #efe7d8; border: 1px solid #554935; border-radius: 6px;
+    padding: 7px 13px; font: inherit; cursor: pointer; margin: 0 8px 8px 0;
+  }
+  button:hover { background: #4a4030; }
+  button.primary { background: #4a5a34; border-color: #6b7f4c; }
+  button.primary:hover { background: #586b3e; }
+  .hint { color: #8d8474; font-size: 12px; margin-top: 10px; max-width: 330px; }
+  .verdict { font-size: 12px; margin-top: 10px; padding: 8px 10px; border-radius: 6px; max-width: 330px; }
+  .verdict.good { background: #26331c; color: #cfe4b4; }
+  .verdict.bad { background: #3a221c; color: #efc4b4; }
+  .verdict { white-space: pre-line; font-variant-numeric: tabular-nums; }
+  code { background: #2a251d; padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<h1>Mouth chart — in-style mouth shapes from FLUX.1 Kontext</h1>
+<p class="sub">
+  The mouth rectangle is found automatically: the pixels that changed between
+  the closed and open edits <em>are</em> the mouth, so the crop region is derived
+  from the edit itself rather than guessed by a model or dragged by hand. The
+  sliders are for correcting it, not for setting it.
+</p>
+
+<div class="row">
+  <div class="panel">
+    <h2>1 · What the model returned</h2>
+    <div class="strip" id="strip"></div>
+    <p class="hint">
+      Look for changes <em>outside</em> the mouth — eyes, hands, background,
+      colour. That is drift, and the crop is what discards it.
+    </p>
+  </div>
+
+  <div class="panel">
+    <h2>2 · Where the change is</h2>
+    <canvas id="diff" width="260"></canvas>
+    <label style="margin-top:10px"><span>threshold</span><input type="range" id="threshold" min="0.15" max="0.85" step="0.05" value="0.45"><output id="thresholdOut"></output></label>
+    <div class="verdict" id="detectVerdict">detecting…</div>
+    <p class="hint">
+      Orange is every pixel that changed. Numbered boxes are the candidate
+      regions, 1 being the pick. If the mouth is a candidate but not number 1,
+      the score needs work. If it is not there at all, the edit drifted too much.
+    </p>
+  </div>
+</div>
+
+<div class="row" style="margin-top: 24px">
+  <div class="panel">
+    <h2>3 · Composite</h2>
+    <canvas id="stage" width="400"></canvas>
+  </div>
+
+  <div class="panel">
+    <h2>4 · Motion</h2>
+    <button id="play" class="primary">▶ simulate speech</button>
+    <button id="rect">outline on</button>
+    <button id="redetect">re-detect</button>
+    <label><span>syllable rate</span><input type="range" id="rate" min="2.5" max="8" step="0.1" value="5"><output id="rateOut"></output> /s</label>
+    <label><span>openness (manual)</span><input type="range" id="openness" min="0" max="1" step="0.01" value="0"><output id="opennessOut"></output></label>
+    <p class="hint">
+      Real speech runs about 5 syllables a second. Judge the composite while it
+      is moving at that rate — a seam you can only find by staring may vanish in
+      motion, and a wobble invisible in a still frame becomes obvious once it
+      moves.
+    </p>
+  </div>
+
+  <div class="panel">
+    <h2>5 · Correction</h2>
+    <label><span>centre x</span><input type="range" id="mx" min="0" max="1" step="0.002" value="0.46"><output id="mxOut"></output></label>
+    <label><span>centre y</span><input type="range" id="my" min="0" max="1" step="0.002" value="0.23"><output id="myOut"></output></label>
+    <label><span>width</span><input type="range" id="mw" min="0.02" max="0.5" step="0.002" value="0.12"><output id="mwOut"></output></label>
+    <label><span>height</span><input type="range" id="mh" min="0.01" max="0.4" step="0.002" value="0.06"><output id="mhOut"></output></label>
+    <label><span>feather</span><input type="range" id="feather" min="0" max="0.9" step="0.02" value="0.45"><output id="featherOut"></output></label>
+    <p class="hint">
+      If auto-detect got it right, leave these alone. In the real app this panel
+      is the fallback for when it does not, not the normal path.
+    </p>
+  </div>
+</div>
+
+<script type="module">
+const manifest = await (await fetch("./out/mouth/manifest.json")).json();
+
+const load = (src) => new Promise((resolve, reject) => {
+  const image = new Image();
+  image.onload = () => resolve(image);
+  image.onerror = () => reject(new Error(`could not load ${src}`));
+  image.src = src;
+});
+
+const named = {};
+for (const variant of manifest.variants) {
+  if (!variant.file) continue;
+  named[variant.name] = await load(`./out/mouth/${variant.file}`);
+}
+const closed = named.closed;
+const ordered = ["mid", "wide"].filter((name) => named[name]);
+const aspect = closed.naturalWidth / closed.naturalHeight;
+
+// --- 1 · raw returns ------------------------------------------------------
+const strip = document.getElementById("strip");
+for (const name of ["closed", ...ordered]) {
+  const image = named[name];
+  const figure = document.createElement("figure");
+  const clone = document.createElement("img");
+  clone.className = "raw";
+  clone.src = image.src;
+  const caption = document.createElement("figcaption");
+  caption.textContent = `${name} · ${image.naturalWidth}×${image.naturalHeight}`;
+  figure.append(clone, caption);
+  strip.append(figure);
+}
+
+// --- 2 · automatic mouth localisation ------------------------------------
+/**
+ * Find the mouth without a face detector, model coordinates or manual dragging.
+ *
+ * The two variants were produced by an instruction that changed only the mouth,
+ * so the region that differs between them is the mouth by construction. That
+ * makes this self-correcting: whatever Kontext actually moved is what gets
+ * cropped, even if it disagrees with where a vision model guessed the mouth is.
+ *
+ * It is also subject-agnostic. No assumption of a human face, so an animal
+ * muzzle or a stylised drawing works the same way.
+ */
+function detectMouth(imageA, imageB, thresholdFraction = 0.45, analysisWidth = 220) {
+  const width = analysisWidth;
+  const height = Math.round(width / aspect);
+
+  const read = (image) => {
+    const canvas = new OffscreenCanvas(width, height);
+    const ctx = canvas.getContext("2d");
+    // Both drawn into the same box, so the uniform rescale Kontext applies is
+    // normalised away and only content differences survive.
+    ctx.drawImage(image, 0, 0, width, height);
+    return ctx.getImageData(0, 0, width, height).data;
+  };
+
+  const a = read(imageA);
+  const b = read(imageB);
+
+  const energy = new Float32Array(width * height);
+  for (let i = 0, p = 0; i < a.length; i += 4, p++) {
+    energy[p] =
+      Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]);
+  }
+
+  // Box blur. JPEG noise and faint global drift are high frequency and low
+  // amplitude; the mouth edit is a contiguous patch. Blurring first means the
+  // threshold separates them instead of picking up speckle.
+  const blurred = new Float32Array(width * height);
+  const radius = 3;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      let sum = 0;
+      let count = 0;
+      for (let dy = -radius; dy <= radius; dy++) {
+        const yy = y + dy;
+        if (yy < 0 || yy >= height) continue;
+        for (let dx = -radius; dx <= radius; dx++) {
+          const xx = x + dx;
+          if (xx < 0 || xx >= width) continue;
+          sum += energy[yy * width + xx];
+          count++;
+        }
+      }
+      blurred[y * width + x] = sum / count;
+    }
+  }
+
+  let peak = 0;
+  let peakAt = 0;
+  let mean = 0;
+  for (let p = 0; p < blurred.length; p++) {
+    mean += blurred[p];
+    if (blurred[p] > peak) {
+      peak = blurred[p];
+      peakAt = p;
+    }
+  }
+  mean /= blurred.length;
+  const threshold = peak * thresholdFraction;
+
+  const mask = new Uint8Array(width * height);
+  for (let p = 0; p < blurred.length; p++) mask[p] = blurred[p] >= threshold ? 1 : 0;
+
+  const visited = new Uint8Array(width * height);
+  const components = [];
+  const stack = [];
+
+  for (let seed = 0; seed < mask.length; seed++) {
+    if (!mask[seed] || visited[seed]) continue;
+    stack.length = 0;
+    stack.push(seed);
+    visited[seed] = 1;
+
+    let minX = width, maxX = -1, minY = height, maxY = -1, total = 0, area = 0;
+    let componentPeak = 0;
+    let containsPeak = false;
+
+    while (stack.length) {
+      const p = stack.pop();
+      const x = p % width;
+      const y = (p - x) / width;
+      total += blurred[p];
+      area++;
+      if (blurred[p] > componentPeak) componentPeak = blurred[p];
+      if (p === peakAt) containsPeak = true;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+
+      const neighbours = [
+        x > 0 ? p - 1 : -1,
+        x < width - 1 ? p + 1 : -1,
+        y > 0 ? p - width : -1,
+        y < height - 1 ? p + width : -1,
+      ];
+      for (const n of neighbours) {
+        if (n < 0 || visited[n] || !mask[n]) continue;
+        visited[n] = 1;
+        stack.push(n);
+      }
+    }
+
+    // Energy density, not total energy. Total grows with area, so a large faint
+    // wash of drift would always beat the small intense patch we want.
+    components.push({
+      minX, maxX, minY, maxY, area, containsPeak,
+      density: total / area,
+      peak: componentPeak,
+      coverage: area / (width * height),
+    });
+  }
+
+  if (!components.length) {
+    return { ok: false, reason: "no region differed at all", mask, width, height, components: [] };
+  }
+
+  // The single most-changed pixel in the whole image is the strongest evidence
+  // available, so prefer the region containing it and fall back to density.
+  components.sort((a, b) => {
+    if (a.containsPeak !== b.containsPeak) return a.containsPeak ? -1 : 1;
+    return b.density - a.density;
+  });
+  const ranked = components.slice(0, 5);
+  const best = components[0];
+
+  const coverage = best.coverage;
+  // A mouth is a small part of a picture. Anything this large is the model
+  // having repainted the whole thing, which is a different failure and must not
+  // be silently accepted as a mouth.
+  if (coverage > 0.18) {
+    return {
+      ok: false,
+      reason: `winning region covers ${(coverage * 100).toFixed(0)}% of the image — that is drift, not a mouth`,
+      mask, width, height, coverage, components: ranked, peak, mean,
+    };
+  }
+
+  // Pad, because lips move slightly beyond the pixels that differ and the
+  // feather needs material to fade out into.
+  const pad = 0.28;
+  const w = ((best.maxX - best.minX + 1) / width) * (1 + pad * 2);
+  const h = ((best.maxY - best.minY + 1) / height) * (1 + pad * 2);
+
+  return {
+    ok: true,
+    coverage,
+    mask,
+    width,
+    height,
+    components: ranked,
+    peak,
+    mean,
+    rect: {
+      x: (best.minX + best.maxX + 1) / 2 / width,
+      y: (best.minY + best.maxY + 1) / 2 / height,
+      w: Math.min(0.5, w),
+      h: Math.min(0.4, h),
+    },
+  };
+}
+
+/** Normalised box of a component, for drawing candidates. */
+const componentRect = (component, width, height) => ({
+  x: (component.minX + component.maxX + 1) / 2 / width,
+  y: (component.minY + component.maxY + 1) / 2 / height,
+  w: (component.maxX - component.minX + 1) / width,
+  h: (component.maxY - component.minY + 1) / height,
+});
+
+const controls = {
+  mx: document.getElementById("mx"),
+  my: document.getElementById("my"),
+  mw: document.getElementById("mw"),
+  mh: document.getElementById("mh"),
+  feather: document.getElementById("feather"),
+  rate: document.getElementById("rate"),
+  openness: document.getElementById("openness"),
+};
+
+let candidates = [];
+
+function runDetection() {
+  const top = named.wide ?? named.mid;
+  const result = detectMouth(closed, top, +document.getElementById("threshold").value);
+  const verdict = document.getElementById("detectVerdict");
+  document.getElementById("thresholdOut").textContent =
+    (+document.getElementById("threshold").value).toFixed(2);
+  candidates = (result.components ?? []).map((component) =>
+    componentRect(component, result.width, result.height),
+  );
+
+  // Paint the difference plus the detected box, so a wrong answer is visible
+  // rather than just wrong.
+  const canvas = document.getElementById("diff");
+  const width = canvas.width;
+  const height = Math.round(width / aspect);
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(closed, 0, 0, width, height);
+  ctx.globalAlpha = 0.35;
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, width, height);
+  ctx.globalAlpha = 1;
+
+  const scaleX = width / result.width;
+  const scaleY = height / result.height;
+  ctx.fillStyle = "rgba(255,170,70,0.85)";
+  for (let p = 0; p < result.mask.length; p++) {
+    if (!result.mask[p]) continue;
+    const x = p % result.width;
+    const y = (p - x) / result.width;
+    ctx.fillRect(x * scaleX, y * scaleY, Math.ceil(scaleX), Math.ceil(scaleY));
+  }
+
+  // Every candidate drawn and numbered. If the mouth is in the list but not
+  // ranked first, the detector needs a better score. If it is absent entirely,
+  // the model drifted too much and no detector will save it.
+  ctx.font = "bold 11px ui-sans-serif, sans-serif";
+  candidates.forEach((rect, index) => {
+    const first = index === 0;
+    ctx.strokeStyle = first ? "rgba(120,200,255,0.95)" : "rgba(255,255,255,0.35)";
+    ctx.lineWidth = first ? 1.5 : 1;
+    const left = (rect.x - rect.w / 2) * width;
+    const top2 = (rect.y - rect.h / 2) * height;
+    ctx.strokeRect(left, top2, rect.w * width, rect.h * height);
+    ctx.fillStyle = first ? "rgba(120,200,255,1)" : "rgba(255,255,255,0.6)";
+    ctx.fillText(String(index + 1), left + 3, top2 + 12);
+  });
+
+  const table = (result.components ?? [])
+    .map((component, index) => {
+      const rect = componentRect(component, result.width, result.height);
+      return (
+        `${index + 1}. y ${rect.y.toFixed(2)}  ${(component.coverage * 100).toFixed(1)}% of frame` +
+        `  density ${component.density.toFixed(0)}${component.containsPeak ? "  ← peak" : ""}`
+      );
+    })
+    .join("\n");
+
+  if (result.ok) {
+    controls.mx.value = result.rect.x.toFixed(3);
+    controls.my.value = result.rect.y.toFixed(3);
+    controls.mw.value = result.rect.w.toFixed(3);
+    controls.mh.value = result.rect.h.toFixed(3);
+    verdict.className = "verdict good";
+    verdict.textContent =
+      `Picked 1 at x ${result.rect.x.toFixed(3)} y ${result.rect.y.toFixed(3)}. ` +
+      `Peak diff ${result.peak.toFixed(0)}, image mean ${result.mean.toFixed(0)}.\n${table}`;
+  } else {
+    verdict.className = "verdict bad";
+    verdict.textContent =
+      `Auto-detect failed: ${result.reason}\n` +
+      `Peak diff ${(result.peak ?? 0).toFixed(0)}, image mean ${(result.mean ?? 0).toFixed(0)}.\n${table}`;
+  }
+
+  render(+controls.openness.value);
+}
+
+// --- 3 · composite --------------------------------------------------------
+const stage = document.getElementById("stage");
+const stageWidth = stage.width;
+const stageHeight = Math.round(stageWidth / aspect);
+stage.height = stageHeight;
+const ctx = stage.getContext("2d");
+
+const scratch = document.createElement("canvas");
+const scratchCtx = scratch.getContext("2d");
+let showRect = true;
+
+function drawMouth(image, rect, feather, alpha) {
+  if (alpha <= 0.001) return;
+
+  const w = Math.max(2, Math.round(rect.w * stageWidth));
+  const h = Math.max(2, Math.round(rect.h * stageHeight));
+  scratch.width = w;
+  scratch.height = h;
+  scratchCtx.clearRect(0, 0, w, h);
+
+  // Source rect in the variant's own pixels, so a variant returned at a
+  // different scale still lines up.
+  scratchCtx.drawImage(
+    image,
+    (rect.x - rect.w / 2) * image.naturalWidth,
+    (rect.y - rect.h / 2) * image.naturalHeight,
+    rect.w * image.naturalWidth,
+    rect.h * image.naturalHeight,
+    0, 0, w, h,
+  );
+
+  if (feather > 0) {
+    const gradient = scratchCtx.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, Math.max(w, h) / 2);
+    gradient.addColorStop(Math.max(0, 1 - feather), "rgba(0,0,0,1)");
+    gradient.addColorStop(1, "rgba(0,0,0,0)");
+    scratchCtx.globalCompositeOperation = "destination-in";
+    scratchCtx.fillStyle = gradient;
+    scratchCtx.fillRect(0, 0, w, h);
+    scratchCtx.globalCompositeOperation = "source-over";
+  }
+
+  ctx.globalAlpha = alpha;
+  ctx.drawImage(
+    scratch,
+    Math.round((rect.x - rect.w / 2) * stageWidth),
+    Math.round((rect.y - rect.h / 2) * stageHeight),
+  );
+  ctx.globalAlpha = 1;
+}
+
+function render(openness) {
+  const rect = { x: +controls.mx.value, y: +controls.my.value, w: +controls.mw.value, h: +controls.mh.value };
+  const feather = +controls.feather.value;
+
+  for (const [key, input] of Object.entries(controls)) {
+    const out = document.getElementById(`${key}Out`);
+    if (out) out.textContent = (+input.value).toFixed(key === "rate" ? 1 : 3);
+  }
+
+  ctx.clearRect(0, 0, stageWidth, stageHeight);
+  ctx.drawImage(closed, 0, 0, stageWidth, stageHeight);
+
+  // Two stacked cross-fades: closed into mid, then mid into wide. The base is
+  // always the untouched artwork, so nothing outside the rectangle can drift.
+  if (ordered.length === 2) {
+    if (openness <= 0.5) {
+      drawMouth(named.mid, rect, feather, openness / 0.5);
+    } else {
+      drawMouth(named.mid, rect, feather, 1);
+      drawMouth(named.wide, rect, feather, (openness - 0.5) / 0.5);
+    }
+  } else if (ordered.length === 1) {
+    drawMouth(named[ordered[0]], rect, feather, openness);
+  }
+
+  if (showRect) {
+    ctx.strokeStyle = "rgba(120,200,255,0.8)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(
+      (rect.x - rect.w / 2) * stageWidth,
+      (rect.y - rect.h / 2) * stageHeight,
+      rect.w * stageWidth,
+      rect.h * stageHeight,
+    );
+  }
+}
+
+for (const input of Object.values(controls)) {
+  input.addEventListener("input", () => {
+    if (input === controls.openness) playing = false, playButton.textContent = "▶ simulate speech";
+    render(+controls.openness.value);
+  });
+}
+
+document.getElementById("rect").addEventListener("click", (event) => {
+  showRect = !showRect;
+  event.target.textContent = showRect ? "outline on" : "outline off";
+  render(+controls.openness.value);
+});
+document.getElementById("redetect").addEventListener("click", runDetection);
+document.getElementById("threshold").addEventListener("input", runDetection);
+
+// --- speech simulation ----------------------------------------------------
+/**
+ * Everything here is time based rather than per frame. The previous version
+ * decayed its target once per frame, which made the rate depend on the display
+ * refresh and produced a strobe rather than speech.
+ */
+const playButton = document.getElementById("play");
+let playing = false;
+let value = 0;
+let target = 0;
+let nextSyllableAt = 0;
+let syllablesLeftInWord = 0;
+let previous = 0;
+
+const ATTACK_TAU = 0.035;  // seconds to rise — syllable onsets are abrupt
+const RELEASE_TAU = 0.075; // slower fall, so the mouth does not snap shut
+const TARGET_TAU = 0.10;   // how long a single syllable's energy lasts
+
+playButton.addEventListener("click", () => {
+  playing = !playing;
+  playButton.textContent = playing ? "■ stop" : "▶ simulate speech";
+  if (playing) {
+    previous = performance.now() / 1000;
+    nextSyllableAt = previous;
+    requestAnimationFrame(tick);
+  } else {
+    render(+controls.openness.value);
+  }
+});
+
+function tick(now) {
+  if (!playing) return;
+  const seconds = now / 1000;
+  const dt = Math.min(seconds - previous, 1 / 20);
+  previous = seconds;
+
+  const rate = +controls.rate.value;
+
+  if (seconds >= nextSyllableAt) {
+    target = 0.4 + Math.random() * 0.6;
+    if (syllablesLeftInWord <= 0) {
+      // Gap between words. Without these it reads as a continuous drone
+      // instead of speech, and continuous motion hides seams unfairly.
+      syllablesLeftInWord = 2 + Math.floor(Math.random() * 4);
+      nextSyllableAt = seconds + 1 / rate + 0.10 + Math.random() * 0.18;
+    } else {
+      syllablesLeftInWord--;
+      nextSyllableAt = seconds + (1 / rate) * (0.75 + Math.random() * 0.5);
+    }
+  }
+
+  target *= Math.exp(-dt / TARGET_TAU);
+  const tau = target > value ? ATTACK_TAU : RELEASE_TAU;
+  value += (target - value) * (1 - Math.exp(-dt / tau));
+
+  render(Math.min(1, Math.max(0, value)));
+  requestAnimationFrame(tick);
+}
+
+runDetection();
+console.log("manifest", manifest);
+</script>
+</body>
+</html>

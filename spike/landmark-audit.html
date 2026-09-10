@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Spike 25 — landmark hit rate on artwork</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; padding: 24px; background: #17140f; color: #efe7d8;
+    font: 14px/1.5 ui-sans-serif, system-ui, sans-serif;
+  }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  p.sub { margin: 0 0 18px; color: #a89e8c; max-width: 800px; }
+  #drop {
+    border: 2px dashed #4a4031; border-radius: 12px; padding: 26px; text-align: center;
+    color: #a89e8c; background: #201c16; cursor: pointer; margin-bottom: 18px;
+  }
+  #drop.over { border-color: #8aa85e; color: #cfe4b4; background: #23271a; }
+  #summary { margin-bottom: 18px; font-size: 13px; }
+  .tally { display: inline-block; padding: 5px 11px; border-radius: 999px; margin-right: 8px; font-variant-numeric: tabular-nums; }
+  .tally.good { background: #26331c; color: #cfe4b4; }
+  .tally.bad { background: #3a221c; color: #efc4b4; }
+  .tally.warn { background: #33301a; color: #e8dcae; }
+  .grid { display: flex; flex-wrap: wrap; gap: 14px; }
+  figure {
+    margin: 0; background: #201c16; border: 1px solid #362f25; border-radius: 10px;
+    padding: 10px; width: 240px;
+  }
+  figure.miss { border-color: #6d3a2c; }
+  figure.warn { border-color: #6d5f2c; }
+  canvas { display: block; border-radius: 6px; background: #000; width: 220px; }
+  figcaption { font-size: 11px; color: #a89e8c; margin-top: 7px; word-break: break-all; }
+  .verdict { font-size: 12px; margin-top: 5px; font-weight: 600; }
+  .verdict.good { color: #cfe4b4; }
+  .verdict.bad { color: #efc4b4; }
+  .verdict.warn { color: #e8dcae; }
+  .detail { font-size: 11px; color: #8d8474; margin-top: 3px; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<h1>Landmark hit rate on artwork</h1>
+<p class="sub">
+  Runs the face landmarker over as many images as you drop in. Entirely local
+  and free — no API calls — so throw the whole spread at it: realistic
+  paintings, flat illustration, crude doodles, profiles, animals, and pictures
+  with several people. What comes back is the real hit rate on the inputs you
+  actually expect, instead of my guess at it.
+</p>
+
+<div id="drop">Drop images here, or click to choose. Many at once is the point.</div>
+<input type="file" id="file" accept="image/*" multiple hidden />
+
+<div id="summary"></div>
+<div class="grid" id="grid"></div>
+
+<script type="module">
+import {
+  FilesetResolver,
+  FaceLandmarker,
+} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/vision_bundle.mjs";
+
+const LIP_INDICES = [
+  61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291,
+  308, 324, 318, 402, 317, 14, 87, 178, 88, 95, 185,
+  40, 39, 37, 0, 267, 269, 270, 409, 415, 310, 311, 312, 13, 82, 81, 80, 191, 78,
+];
+
+const drop = document.getElementById("drop");
+const grid = document.getElementById("grid");
+const summary = document.getElementById("summary");
+const tally = { found: 0, missed: 0, warned: 0 };
+
+drop.textContent = "loading face landmarker…";
+
+const fileset = await FilesetResolver.forVisionTasks(
+  "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm",
+);
+
+// numFaces above one on purpose: a painting with several people is a case the
+// product has to handle, and silently taking one of them is the wrong answer.
+const options = {
+  baseOptions: {
+    modelAssetPath:
+      "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+  },
+  runningMode: "IMAGE",
+  numFaces: 5,
+  outputFacialTransformationMatrixes: true,
+};
+
+let landmarker;
+try {
+  landmarker = await FaceLandmarker.createFromOptions(fileset, {
+    ...options,
+    baseOptions: { ...options.baseOptions, delegate: "GPU" },
+  });
+} catch {
+  landmarker = await FaceLandmarker.createFromOptions(fileset, options);
+}
+
+drop.textContent = "Drop images here, or click to choose. Many at once is the point.";
+
+/** Approximate head yaw and pitch in degrees from the 4x4 pose matrix. */
+function poseFromMatrix(matrix) {
+  if (!matrix?.data || matrix.data.length < 16) return null;
+  const m = matrix.data;
+  // Column-major 4x4. Rotation terms only.
+  const yaw = Math.atan2(-m[8], Math.hypot(m[9], m[10])) * (180 / Math.PI);
+  const pitch = Math.atan2(m[9], m[10]) * (180 / Math.PI);
+  return { yaw, pitch };
+}
+
+const load = (src) => new Promise((resolve, reject) => {
+  const image = new Image();
+  image.onload = () => resolve(image);
+  image.onerror = () => reject(new Error("decode failed"));
+  image.src = src;
+});
+
+function updateSummary() {
+  const total = tally.found + tally.missed + tally.warned;
+  summary.innerHTML =
+    `<span class="tally good">${tally.found} clean</span>` +
+    `<span class="tally warn">${tally.warned} needs review</span>` +
+    `<span class="tally bad">${tally.missed} no face</span>` +
+    `<span style="color:#8d8474">out of ${total}</span>`;
+}
+
+async function audit(file) {
+  const url = URL.createObjectURL(file);
+  const figure = document.createElement("figure");
+  const canvas = document.createElement("canvas");
+  const caption = document.createElement("figcaption");
+  const verdict = document.createElement("div");
+  const detail = document.createElement("div");
+  verdict.className = "verdict";
+  detail.className = "detail";
+  caption.textContent = file.name;
+  figure.append(canvas, verdict, detail, caption);
+  grid.append(figure);
+
+  let image;
+  try {
+    image = await load(url);
+  } catch {
+    figure.className = "miss";
+    verdict.className = "verdict bad";
+    verdict.textContent = "could not decode";
+    tally.missed++;
+    updateSummary();
+    return;
+  }
+
+  const width = 220;
+  const height = Math.max(1, Math.round(width / (image.naturalWidth / image.naturalHeight)));
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(image, 0, 0, width, height);
+
+  const result = landmarker.detect(image);
+  const faces = result?.faceLandmarks ?? [];
+
+  if (!faces.length) {
+    figure.className = "miss";
+    verdict.className = "verdict bad";
+    verdict.textContent = "no face found";
+    detail.textContent = `${image.naturalWidth}×${image.naturalHeight} — would fall back to the vision box or a manual drag`;
+    tally.missed++;
+    updateSummary();
+    URL.revokeObjectURL(url);
+    return;
+  }
+
+  const notes = [];
+  faces.forEach((face, index) => {
+    const points = LIP_INDICES.map((i) => face[i]).filter(Boolean);
+    if (!points.length) return;
+
+    ctx.fillStyle = index === 0 ? "rgba(120,255,150,0.95)" : "rgba(255,220,120,0.9)";
+    for (const point of points) {
+      ctx.fillRect(point.x * width - 1, point.y * height - 1, 2, 2);
+    }
+
+    const xs = points.map((p) => p.x);
+    const ys = points.map((p) => p.y);
+    const minX = Math.min(...xs), maxX = Math.max(...xs);
+    const minY = Math.min(...ys), maxY = Math.max(...ys);
+    ctx.strokeStyle = index === 0 ? "rgba(120,200,255,0.9)" : "rgba(255,200,120,0.6)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(minX * width, minY * height, (maxX - minX) * width, (maxY - minY) * height);
+
+    const pose = poseFromMatrix(result.facialTransformationMatrixes?.[index]);
+    const lipWidth = (maxX - minX) * 100;
+    notes.push(
+      `face ${index + 1}: lips ${lipWidth.toFixed(1)}% wide` +
+        (pose ? `, yaw ${pose.yaw.toFixed(0)}°` : ""),
+    );
+  });
+
+  // Two ways a detection can be technically successful but wrong for us: a
+  // strongly turned head, where a frontal mouth edit will look pasted on, and
+  // lips so small that the crop has almost no pixels to work with.
+  const pose = poseFromMatrix(result.facialTransformationMatrixes?.[0]);
+  const firstPoints = LIP_INDICES.map((i) => faces[0][i]).filter(Boolean);
+  const lipSpan = Math.max(...firstPoints.map((p) => p.x)) - Math.min(...firstPoints.map((p) => p.x));
+  const turned = pose ? Math.abs(pose.yaw) > 32 : false;
+  const tiny = lipSpan < 0.045;
+  const crowded = faces.length > 1;
+
+  if (turned || tiny || crowded) {
+    figure.className = "warn";
+    verdict.className = "verdict warn";
+    verdict.textContent = [
+      crowded ? `${faces.length} faces — needs a speaker choice` : null,
+      turned ? "head turned — frontal mouth may look pasted on" : null,
+      tiny ? "lips very small — little detail to edit" : null,
+    ].filter(Boolean).join(" · ");
+    tally.warned++;
+  } else {
+    verdict.className = "verdict good";
+    verdict.textContent = "clean hit";
+    tally.found++;
+  }
+
+  detail.textContent = `${image.naturalWidth}×${image.naturalHeight} — ${notes.join("; ")}`;
+  updateSummary();
+  URL.revokeObjectURL(url);
+}
+
+async function handle(files) {
+  for (const file of files) {
+    if (!file.type.startsWith("image/")) continue;
+    await audit(file);
+  }
+}
+
+const input = document.getElementById("file");
+drop.addEventListener("click", () => input.click());
+input.addEventListener("change", () => handle([...input.files]));
+drop.addEventListener("dragover", (event) => {
+  event.preventDefault();
+  drop.classList.add("over");
+});
+drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+drop.addEventListener("drop", (event) => {
+  event.preventDefault();
+  drop.classList.remove("over");
+  handle([...event.dataTransfer.files]);
+});
+
+updateSummary();
+</script>
+</body>
+</html>

@@ -51,7 +51,14 @@ export class MicCapture {
     this.sink.connect(this.ctx.destination);
   }
 
-  /** Gate capture without dropping the stream or re-prompting for permission. */
+  /**
+   * Gate capture without dropping the stream or re-prompting for permission.
+   *
+   * The worklet keeps emitting frames while muted, just filled with silence, so
+   * the server's turn detection still sees a continuous stream. Disabling the
+   * track as well means nothing is captured even if the worklet lags a frame
+   * behind the message.
+   */
   setMuted(muted: boolean): void {
     this.worklet?.port.postMessage({ type: "mute", value: muted });
     for (const track of this.stream?.getAudioTracks() ?? []) {

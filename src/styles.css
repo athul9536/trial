@@ -662,3 +662,79 @@ body {
   font-size: 12px;
   color: var(--muted);
 }
+
+/* ---------- push to talk ---------- */
+
+.talk-btn {
+  font: inherit;
+  font-size: 17px;
+  font-weight: 600;
+  width: 100%;
+  max-width: 420px;
+  padding: 18px 20px;
+  border-radius: 16px;
+  border: 2px solid #00000022;
+  background: var(--paper);
+  color: var(--ink);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  /* Stops the browser turning a press-and-hold into a text selection or a
+     long-press context menu on touch devices. */
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: transform 0.08s ease, background 0.12s ease, box-shadow 0.12s ease;
+}
+
+.talk-btn span {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.talk-btn:hover {
+  box-shadow: 0 4px 14px -6px #00000055;
+}
+
+.talk-btn-live {
+  background: #2f8f4e;
+  border-color: #24713d;
+  color: #fff;
+  transform: scale(0.985);
+  box-shadow: 0 0 0 6px #2f8f4e28;
+}
+
+.talk-btn-live span {
+  color: #ffffffcc;
+}
+
+.talk-btn:focus-visible {
+  outline: 3px solid #6b8fb3;
+  outline-offset: 3px;
+}
+
+.ptt-toggle {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 9px;
+  align-items: center;
+  max-width: 420px;
+  width: 100%;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.ptt-toggle input {
+  accent-color: var(--accent);
+  margin: 0;
+  grid-row: span 2;
+}
+
+.ptt-toggle span {
+  grid-column: 2;
+  font-size: 12px;
+  color: var(--muted);
+}

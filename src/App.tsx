@@ -66,6 +66,13 @@ const STATE_LABELS: Record<SessionState, string> = {
   ended: "അവസാനിച്ചു",
 };
 
+/**
+ * How long to keep the microphone closed after the character stops speaking.
+ * Covers the room's reverb tail, which would otherwise be heard as the user
+ * starting to talk.
+ */
+const SPEAKING_GUARD_TAIL_MS = 350;
+
 const SUGGESTIONS = [
   "നിനക്ക് ഇവിടെ ഇരുന്ന് മടുത്തില്ലേ?",
   "എന്നെക്കുറിച്ച് നിന്റെ അഭിപ്രായം എന്താ?",
@@ -90,6 +97,23 @@ export default function App() {
   const [voice, setVoice] = useState<VoiceChoice>("male");
   const [roast, setRoast] = useState<RoastLevel>("savage");
   const [showEyes, setShowEyes] = useState(true);
+  /**
+   * Push-to-talk by default. Presenting through speakers without headphones
+   * means the microphone hears the character and the audience, and hands-free
+   * would have it interrupting itself and answering laughter.
+   */
+  const [pushToTalk, setPushToTalk] = useState(true);
+  const [transmitting, setTransmitting] = useState(false);
+
+  /** Read inside the animation loop, so it must be a ref rather than state. */
+  const holdingRef = useRef(false);
+  /** Last moment the character was audibly speaking, for the guard tail. */
+  const lastSpokeAtRef = useRef(0);
+  /** Mirrors what we last told the mic, to avoid redundant calls every frame. */
+  const micMutedRef = useRef(true);
+  const pushToTalkRef = useRef(pushToTalk);
+  pushToTalkRef.current = pushToTalk;
+  const userMutedRef = useRef(false);
 
   const ctxRef = useRef<AudioContext | null>(null);
   const playerRef = useRef<PcmPlayer | null>(null);
@@ -124,6 +148,9 @@ export default function App() {
     void ctxRef.current?.close();
     ctxRef.current = null;
 
+    holdingRef.current = false;
+    micMutedRef.current = true;
+    setTransmitting(false);
     setLive(false);
   }, []);
 
@@ -279,6 +306,18 @@ export default function App() {
         const mic = new MicCapture(ctx, (frame) => link.sendAudio(frame));
         micRef.current = mic;
         await mic.start();
+
+        // The microphone starts live, so apply the gate immediately rather than
+        // waiting for the loop to notice. Otherwise push-to-talk would transmit
+        // from the moment the session opens, which is exactly what it exists to
+        // prevent.
+        holdingRef.current = false;
+        userMutedRef.current = false;
+        lastSpokeAtRef.current = performance.now();
+        micMutedRef.current = true;
+        mic.setMuted(true);
+        setTransmitting(false);
+
         setTextOnly(false);
       } catch {
         micRef.current = null;
@@ -290,17 +329,36 @@ export default function App() {
 
       setLive(true);
 
-      // Derives only the discrete "is it speaking" state. Returning the same
-      // value from a setState updater bails out without re-rendering, so this
-      // costs nothing on frames where nothing changed.
+      // Derives the discrete "is it speaking" state and gates the microphone.
+      // Returning the same value from a setState updater bails out without
+      // re-rendering, so this costs nothing on frames where nothing changed.
       const tick = () => {
         const playing = player.isPlaying;
+        const now = performance.now();
+        if (playing) lastSpokeAtRef.current = now;
+
         setState((current) => {
           if (current === "error" || current === "ended") return current;
           if (playing) return "speaking";
           if (current === "speaking") return "ready";
           return current;
         });
+
+        // Speaking guard: never listen while the character talks, plus a short
+        // tail for room reverb. Without this, playing through speakers makes it
+        // hear itself, interrupt itself, and answer its own voice. Azure's
+        // server-side echo cancellation is unavailable on the Sarvam path, so
+        // this is the only thing standing between us and a feedback loop.
+        const guarded = playing || now - lastSpokeAtRef.current < SPEAKING_GUARD_TAIL_MS;
+        const gatedByPtt = pushToTalkRef.current && !holdingRef.current;
+        const shouldMute = userMutedRef.current || guarded || gatedByPtt;
+
+        if (shouldMute !== micMutedRef.current) {
+          micMutedRef.current = shouldMute;
+          micRef.current?.setMuted(shouldMute);
+          setTransmitting(!shouldMute);
+        }
+
         frameRef.current = requestAnimationFrame(tick);
       };
       frameRef.current = requestAnimationFrame(tick);
@@ -345,8 +403,48 @@ export default function App() {
   const toggleMute = useCallback(() => {
     const next = !muted;
     setMuted(next);
-    micRef.current?.setMuted(next);
+    // The animation loop owns the mic gate, so we only record intent here and
+    // let it apply the combination of user mute, speaking guard and push-to-talk.
+    userMutedRef.current = next;
   }, [muted]);
+
+  const setHolding = useCallback((holding: boolean) => {
+    holdingRef.current = holding;
+  }, []);
+
+  // Space bar as the push-to-talk key, so you are not chasing a button with the
+  // mouse while presenting. Ignored while typing in the question box.
+  useEffect(() => {
+    if (!live || !pushToTalk) return;
+
+    const isTypingTarget = (target: EventTarget | null) =>
+      target instanceof HTMLElement &&
+      (target.tagName === "INPUT" || target.tagName === "TEXTAREA");
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.code !== "Space" || event.repeat || isTypingTarget(event.target)) return;
+      event.preventDefault();
+      holdingRef.current = true;
+    };
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.code !== "Space" || isTypingTarget(event.target)) return;
+      event.preventDefault();
+      holdingRef.current = false;
+    };
+    // Losing focus mid-hold would otherwise leave the microphone open.
+    const onBlur = () => {
+      holdingRef.current = false;
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onBlur);
+    };
+  }, [live, pushToTalk]);
 
   const escape = useCallback(() => {
     if (!live) return;
@@ -519,8 +617,43 @@ export default function App() {
             )}
           </div>
 
+          {!textOnly && pushToTalk && (
+            <button
+              className={`talk-btn${transmitting ? " talk-btn-live" : ""}`}
+              onPointerDown={() => setHolding(true)}
+              onPointerUp={() => setHolding(false)}
+              onPointerLeave={() => setHolding(false)}
+              onPointerCancel={() => setHolding(false)}
+              // The pointer handlers already cover this; the space bar is wired
+              // globally so it works without focusing the button.
+              onContextMenu={(event) => event.preventDefault()}
+            >
+              {transmitting ? "കേൾക്കുന്നു... release when done" : "പിടിച്ച് സംസാരിക്കൂ · Hold to talk"}
+              <span>or hold the space bar</span>
+            </button>
+          )}
+
+          {!textOnly && (
+            <label className="ptt-toggle">
+              <input
+                type="checkbox"
+                checked={pushToTalk}
+                onChange={(event) => {
+                  setPushToTalk(event.target.checked);
+                  holdingRef.current = false;
+                }}
+              />
+              Push to talk
+              <span>
+                {pushToTalk
+                  ? "safest with speakers: it only hears you while you hold"
+                  : "hands-free. Use headphones, or it will hear itself"}
+              </span>
+            </label>
+          )}
+
           <div className="controls">
-            {!textOnly && (
+            {!textOnly && !pushToTalk && (
               <button className="btn" onClick={toggleMute}>
                 {muted ? "Unmute" : "Mute mic"}
               </button>

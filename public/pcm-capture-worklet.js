@@ -21,8 +21,6 @@ class PcmCaptureProcessor extends AudioWorkletProcessor {
     this.port.onmessage = (event) => {
       if (event.data?.type === "mute") {
         this._muted = Boolean(event.data.value);
-        // Drop whatever was mid-collection so unmuting starts clean.
-        this._offset = 0;
       }
     };
   }
@@ -31,13 +29,11 @@ class PcmCaptureProcessor extends AudioWorkletProcessor {
     const channel = inputs[0]?.[0];
     if (!channel) return true;
 
-    if (this._muted) {
-      this._offset = 0;
-      return true;
-    }
-
     for (let i = 0; i < channel.length; i++) {
-      this._buffer[this._offset++] = channel[i];
+      // When muted we emit SILENCE rather than dropping frames. The server's
+      // voice activity detection needs a continuous stream to recognise that a
+      // turn has ended; sending nothing at all just leaves it waiting.
+      this._buffer[this._offset++] = this._muted ? 0 : channel[i];
 
       if (this._offset === TARGET_SAMPLES) {
         const pcm = new Int16Array(TARGET_SAMPLES);

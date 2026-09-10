@@ -815,3 +815,18 @@ body {
   outline: 3px solid #6b8fb3;
   outline-offset: 2px;
 }
+
+/* ---------- resumed after reload ---------- */
+
+.resumed-note {
+  margin: 0;
+  max-width: 420px;
+  padding: 9px 14px;
+  border-radius: 10px;
+  background: #eef4ec;
+  border: 1px solid #b9cfb6;
+  color: #33613a;
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: center;
+}

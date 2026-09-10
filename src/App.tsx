@@ -6,6 +6,7 @@ import type { PreparedImage } from "./lib/imagePrep";
 import { MicCapture } from "./lib/micCapture";
 import { PcmPlayer, PLAYBACK_SAMPLE_RATE } from "./lib/pcmPlayer";
 import { deriveEyes, type EyePlacement, type MouthPlacement } from "./lib/placement";
+import { clearSnapshot, loadSnapshot, saveSnapshot } from "./lib/sessionSnapshot";
 import {
   RealtimeLink,
   type RoastLevel,
@@ -98,6 +99,8 @@ export default function App() {
   const [voice, setVoice] = useState<VoiceChoice>("male");
   const [roast, setRoast] = useState<RoastLevel>("savage");
   const [showEyes, setShowEyes] = useState(true);
+  /** Set when the picture came back from a reload, so we can say so. */
+  const [resumed, setResumed] = useState(false);
   /**
    * Push-to-talk by default. Presenting through speakers without headphones
    * means the microphone hears the character and the audience, and hands-free
@@ -157,10 +160,52 @@ export default function App() {
 
   useEffect(() => teardown, [teardown]);
 
+  // Restore the picture after a reload. Deliberately stops at the prepare screen
+  // rather than reconnecting automatically: a session that starts talking on its
+  // own after a refresh would be alarming, and waking it is one tap.
+  useEffect(() => {
+    const snapshot = loadSnapshot();
+    if (!snapshot) return;
+
+    setSubject({
+      characterId: snapshot.characterId,
+      label: snapshot.label,
+      imageUrl: snapshot.imageUrl,
+      aspectRatio: snapshot.aspectRatio,
+      mouth: snapshot.mouth,
+      eyes: snapshot.eyes,
+      card: snapshot.card as Subject["card"],
+    });
+    setShowEyes(snapshot.showEyes);
+    setVoice(snapshot.voice);
+    setRoast(snapshot.roast);
+    setStage("preparing");
+    setResumed(true);
+  }, []);
+
+  // Persist whenever anything the prepare screen owns changes. Cheap: a few
+  // hundred KB of JSON, written only on discrete user actions.
+  useEffect(() => {
+    if (!subject) return;
+    saveSnapshot({
+      characterId: subject.characterId,
+      label: subject.label,
+      imageUrl: subject.imageUrl,
+      aspectRatio: subject.aspectRatio,
+      mouth: subject.mouth,
+      eyes: subject.eyes,
+      showEyes,
+      voice,
+      roast,
+      card: subject.card,
+    });
+  }, [subject, showEyes, voice, roast]);
+
   const analyse = useCallback(async (image: PreparedImage) => {
     setAnalysing(true);
     setAnalysisNote("");
     setError("");
+    setResumed(false);
 
     try {
       const response = await fetch("/api/analyse", {
@@ -218,6 +263,7 @@ export default function App() {
   const useChair = useCallback(() => {
     setError("");
     setAnalysisNote("");
+    setResumed(false);
     setSubject(CHAIR_FALLBACK);
     setStage("preparing");
   }, []);
@@ -444,6 +490,10 @@ export default function App() {
   const changePicture = useCallback(() => {
     teardown();
     setState("idle");
+    // Deliberate discard, so the old picture does not reappear on the next
+    // reload after the user has moved on from it.
+    clearSnapshot();
+    setResumed(false);
     setSubject(null);
     setCaption("");
     setUserSaid("");
@@ -538,6 +588,12 @@ export default function App() {
 
       {stage === "preparing" && subject && (
         <>
+          {resumed && (
+            <p className="resumed-note">
+              നിന്റെ ചിത്രം ഓർത്തുവെച്ചു · Picked up where you left off. Press
+              wake, or choose a different picture.
+            </p>
+          )}
           <MouthEditor
             imageUrl={subject.imageUrl}
             aspectRatio={subject.aspectRatio}

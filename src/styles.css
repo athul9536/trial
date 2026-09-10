@@ -365,10 +365,34 @@ body {
   margin: 0 0 8px;
 }
 
-.disclaimer {
+.notice {
   font-size: 12px;
   color: #9a8f7d;
   line-height: 1.5;
+}
+
+.notice summary {
+  cursor: pointer;
+  color: var(--muted);
+  list-style: none;
+}
+
+.notice summary::-webkit-details-marker {
+  display: none;
+}
+
+.notice summary::before {
+  content: "ⓘ ";
+}
+
+.notice summary:hover {
+  color: var(--ink);
+}
+
+.notice p {
+  margin: 8px auto 0;
+  max-width: 460px;
+  text-align: left;
 }
 
 /* ---------- landing and upload ---------- */

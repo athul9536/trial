@@ -546,8 +546,12 @@ export default function App() {
       (target.tagName === "INPUT" || target.tagName === "TEXTAREA");
 
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.code !== "Space" || event.repeat || isTypingTarget(event.target)) return;
+      if (event.code !== "Space" || isTypingTarget(event.target)) return;
+      // Must come before the repeat check. Holding space fires repeated keydown
+      // events, and letting those through scrolled the page and pushed the
+      // picture out of view mid-conversation.
       event.preventDefault();
+      if (event.repeat) return;
       holdingRef.current = true;
     };
     const onKeyUp = (event: KeyboardEvent) => {
@@ -843,16 +847,25 @@ export default function App() {
 
       <footer className="footnote">
         <p>
-          Speak into your microphone and the picture replies in Malayalam. Use
-          headphones: without them it hears itself and argues with itself.
+          {pushToTalk
+            ? "Hold the button or the space bar, speak, then let go."
+            : "Speak and it replies. Hands-free works best with headphones."}
         </p>
-        <p className="disclaimer">
-          Your image and microphone audio are sent to the configured Azure AI
-          provider to generate replies. Nothing is stored. The voice is a stock
-          synthetic voice and the personality is fiction, not a real recording of
-          anyone. The mouth is animated from audio loudness, so it moves in time
-          with speech but does not form accurate lip shapes.
-        </p>
+        {/*
+          Kept, but collapsed. The wall of text crowded the picture on the demo
+          screen, and the picture is supposed to be the focus. Folding it away
+          keeps the disclosure available without it dominating the page.
+        */}
+        <details className="notice">
+          <summary>Privacy and AI notice</summary>
+          <p>
+            Your image and microphone audio are sent to the configured AI
+            providers to generate replies. Nothing is stored. The voice is a
+            stock synthetic voice and the personality is fiction, not a real
+            recording of anyone. The mouth is animated from audio loudness, so it
+            moves in time with speech but does not form accurate lip shapes.
+          </p>
+        </details>
       </footer>
     </main>
   );

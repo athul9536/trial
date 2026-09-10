@@ -38,6 +38,17 @@ const AUDITION_LINE = "ഛേ! നൂറ്റാണ്ടുകളായി ഇ
 const FINALIST_LINE =
   "ഛേ! നൂറ്റാണ്ടുകളായി ഞാൻ ഇതേ ഭാവത്തിൽ നിൽക്കുന്നു... ഒരു ചുവട് വെക്കാൻ പോലും വഴിയില്ല. ഈ ഫ്രെയിം എന്റെ ജയിലാണ്!";
 
+/**
+ * A real reply the character produced, with three English words in it.
+ *
+ * The original audition used pure Malayalam, because Manglish was not possible
+ * on Azure at the time. Code-mixing is a different skill: the voice has to
+ * switch phonology mid-sentence and switch back. gokul was cast before that was
+ * ever tested, and reportedly stumbles on it where roopa is smooth.
+ */
+const MANGLISH_LINE =
+  "എന്റമ്മോ... പുറത്തു പോകാൻ permission ഇല്ല... ഫ്രെയിം തന്നെയാണ് ലോകം, നിന്റെ camera മാത്രം വാതിൽ, പക്ഷേ freedom ഫോട്ടോ സൈസ്!";
+
 const MALE = [
   "shubh", "aditya", "rahul", "rohan", "amit", "dev", "ratan", "varun",
   "manan", "sumit", "kabir", "aayan", "ashutosh", "advait", "anand", "tarun",
@@ -110,22 +121,29 @@ async function finalistRound(speaker) {
   console.log(`Output: spike/out/sarvam-finalist/\n`);
 
   let characters = 0;
-  // Range corrected after listening: the slow end sounded lifeless rather than
-  // weary. Anger carries energy, so the useful range sits at or above normal.
-  for (const pace of [0.95, 1.0, 1.1]) {
+  // Uses the code-mixed line, because that is where problems actually show up.
+  // The pure-Malayalam line sounded fine on voices that stumble on Manglish,
+  // which is how the original casting went wrong.
+  //
+  // Range covers slower-than-normal: the reported artefact is the final English
+  // word being rushed, and giving the voice more room is the obvious remedy.
+  for (const pace of [0.9, 0.95, 1.0]) {
     const id = `${speaker}-pace-${String(pace).replace(".", "")}`;
     process.stdout.write(`  ${id.padEnd(24)} `);
-    const result = await synthesise({ text: FINALIST_LINE, speaker, pace });
+    const result = await synthesise({ text: MANGLISH_LINE, speaker, pace });
     if (!result.ok) {
       console.log(`FAILED  ${result.detail}`);
       continue;
     }
-    characters += FINALIST_LINE.length;
+    characters += MANGLISH_LINE.length;
     writeFileSync(join(outDir, `${id}.wav`), result.bytes);
-    console.log(`ok  ${(result.bytes.length / 1024).toFixed(0)} KB`);
+    const seconds = ((result.bytes.length - 44) / 48000).toFixed(1);
+    console.log(`ok  ${seconds}s`);
   }
 
   console.log(`\ncharacters billed: ~${characters} (about ₹${((characters / 1000) * 3).toFixed(2)})`);
+  console.log("\nListen to the final word, 'freedom'. If 0.95 or 0.9 stops it being");
+  console.log("rushed, set SARVAM_PACE in .env. That applies to both voices.");
 }
 
 /** Mode 1: the full catalogue. */
@@ -237,6 +255,64 @@ async function shortlistRound() {
   console.log("  node spike/14-voice-casting.mjs <name>");
 }
 
+/**
+ * Mode 4: every male voice on a genuinely code-mixed line.
+ *
+ * This is the test that should have been run before casting. roopa is included
+ * as a reference, since it is the voice reported as smooth — anything that does
+ * not hold up next to it is not good enough.
+ */
+async function manglishRound(group = "male") {
+  const outDir = join(__dirname, "out", `sarvam-manglish-${group}`);
+  mkdirSync(outDir, { recursive: true });
+
+  const candidates = group === "female" ? FEMALE : MALE;
+  // tarun was picked on this exact line, so it is the known-good benchmark.
+  const reference = group === "female" ? "tarun" : "roopa";
+
+  console.log(`SPIKE 14 - ${group} voices on a code-mixed line`);
+  console.log(`Nothing in the app is modified. Output: spike/out/sarvam-manglish-${group}/\n`);
+  console.log(`line : ${MANGLISH_LINE}\n`);
+
+  let characters = 0;
+
+  // Reference first, so the standard is set before the candidates.
+  const entries = [
+    { speaker: reference, id: `00-REFERENCE-${reference}` },
+    ...candidates.map((speaker, index) => ({
+      speaker,
+      id: `${String(index + 1).padStart(2, "0")}-${speaker}`,
+    })),
+  ];
+
+  for (const entry of entries) {
+    process.stdout.write(`  ${entry.id.padEnd(22)} `);
+    const result = await synthesise({ text: MANGLISH_LINE, speaker: entry.speaker, pace: 1.0 });
+    if (!result.ok) {
+      console.log(`FAILED  ${result.detail}`);
+      continue;
+    }
+    characters += MANGLISH_LINE.length;
+    writeFileSync(join(outDir, `${entry.id}.wav`), result.bytes);
+    const seconds = ((result.bytes.length - 44) / 48000).toFixed(1);
+    console.log(`ok  ${seconds}s`);
+  }
+
+  console.log("\n" + "=".repeat(62));
+  console.log(`characters billed: ~${characters} (about ₹${((characters / 1000) * 3).toFixed(2)})`);
+  console.log(`\nPlay 00-REFERENCE-${reference} first to set the standard, then find`);
+  console.log(`a ${group} voice that handles the three English words as smoothly.`);
+  console.log("\nListen specifically at the switches: permission, camera, freedom.");
+  console.log("A stumble shows up as a hesitation or wrong stress right there,");
+  console.log("not spread across the sentence.");
+  console.log("\n'freedom' is the hardest of the three: it sits at the end, where");
+  console.log("voices tend to rush. If a voice is going to fall apart, it happens");
+  console.log("there.");
+  console.log(
+    `\nTo use a winner: set SARVAM_VOICE_${group.toUpperCase()} in .env and restart.`,
+  );
+}
+
 async function main() {
   if (!API_KEY) {
     console.error("[FAIL] SARVAM_API_KEY is not set in .env");
@@ -247,6 +323,11 @@ async function main() {
 
   if (requested === "shortlist") {
     await shortlistRound();
+    return;
+  }
+
+  if (requested === "manglish") {
+    await manglishRound(process.argv[3] === "female" ? "female" : "male");
     return;
   }
 

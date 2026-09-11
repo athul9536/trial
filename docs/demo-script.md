@@ -61,19 +61,24 @@ This is where it roasts you. Let it land, do not talk over it.
 Then press **പുറത്ത് ചാടാൻ നോക്കൂ · Escape**. The picture lunges, hits the frame
 edge and complains about it.
 
-### 3. An object (45 seconds) — proves it is not just faces
+### 3. A second subject (45 seconds) — proves it reads the actual image
 
-**വേറെ ചിത്രം**, then tap **കസേര** or **അപ്പം**.
+**വേറെ ചിത്രം**, then upload or photograph a drawing of your own.
 
-> "It does not need a face. Anything works."
+The one-tap examples are now just the Mona Lisa. The appam and chair buttons are
+gone: a cartoon mouth stuck on an object was the weakest version of the idea, and
+leading with it undersold the rest.
+
+A hand-drawn face is the strongest second subject, because the personality is
+built from what is really in the picture and the audience watched you supply it.
 
 Switch voice to male. Ask:
 
 **"നിനക്ക് ഇവിടെ ഇരുന്ന് മടുത്തില്ലേ?"** *(Aren't you tired of sitting there?)*
 
-For the appam, the Kerala-specific one:
+If it is a drawing somebody made in the room:
 
-**"നിനക്ക് എത്ര ദ്വാരങ്ങളുണ്ട്?"** *(How many holes do you have?)*
+**"ആരാ നിന്നെ വരച്ചത്?"** *(Who drew you?)*
 
 ### 4. The close (20 seconds)
 

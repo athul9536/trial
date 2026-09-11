@@ -26,8 +26,10 @@ The picture itself is the character.**
 
 ## 2. User flow
 
-1. **Landing** — upload a photo, take one with the camera, or tap one of three
-   bundled examples (Mona Lisa, an appam, a plastic chair).
+1. **Landing** — upload a photo, take one with the camera, or tap the bundled
+   Mona Lisa example. An appam and a plastic chair used to be offered too, and
+   were dropped: a cartoon mouth pasted onto an object is the weakest version of
+   the idea, and leading with it undersold everything else.
 2. **Analysis** — a vision model looks at the image and produces a character
    card: subject type, visible details, uncertainties, personality, grievance,
    secret desire, running joke, an opening line, and a suggested mouth position.

@@ -17,13 +17,13 @@ interface Props {
 /**
  * One-tap demo subjects, so presenting does not involve a file picker.
  *
- * Chosen to cover three different behaviours: a recognised artwork, a Kerala
- * food subject, and a plain object with no face at all.
+ * Narrowed to artwork with a subject that can plausibly speak. The appam and the
+ * chair were here to show that anything could talk, but a cartoon mouth pasted
+ * onto an object is the weakest version of the idea, so they are no longer what
+ * the app leads with.
  */
 const EXAMPLES = [
   { url: "/examples/mona-lisa.jpg", label: "മോണാലിസ", hint: "recognises the painting" },
-  { url: "/examples/appam.svg", label: "അപ്പം", hint: "counts its own holes" },
-  { url: "/chair.svg", label: "കസേര", hint: "no face required" },
 ];
 
 export function UploadPanel({ onImage, onUseChair, disabled }: Props) {
@@ -144,7 +144,7 @@ export function UploadPanel({ onImage, onUseChair, disabled }: Props) {
           />
 
           <div className="examples">
-            <span>അല്ലെങ്കിൽ ഇതിലൊന്ന് · or try one of these</span>
+            <span>അല്ലെങ്കിൽ ഇത് · or try this one</span>
             <div className="example-row">
               {EXAMPLES.map((example) => (
                 <button
